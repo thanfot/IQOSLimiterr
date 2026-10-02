@@ -1,0 +1,112 @@
+{
+  "source": "/Users/thanfot/Documents/IQOS/IQOSLimiter/IQOSLimiter/ContentView.swift",
+  "tables": {
+    "Localizable": [
+      {
+        "comment": "",
+        "key": "IQOS Limiter",
+        "location": {
+          "startingColumn": 30,
+          "startingLine": 28
+        }
+      },
+      {
+        "comment": "",
+        "key": "%lld",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 110
+        }
+      },
+      {
+        "comment": "",
+        "key": "/ %lld sticks",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 113
+        }
+      },
+      {
+        "comment": "",
+        "key": "Απομένουν %lld",
+        "location": {
+          "startingColumn": 26,
+          "startingLine": 117
+        }
+      },
+      {
+        "comment": "",
+        "key": "Όριο!",
+        "location": {
+          "startingColumn": 26,
+          "startingLine": 121
+        }
+      },
+      {
+        "comment": "",
+        "key": "Αλλαγή ημερήσιου ορίου",
+        "location": {
+          "startingColumn": 23,
+          "startingLine": 196
+        }
+      },
+      {
+        "comment": "",
+        "key": "Έκτακτο Ξεκλείδωμα",
+        "location": {
+          "startingColumn": 27,
+          "startingLine": 208
+        }
+      },
+      {
+        "comment": "",
+        "key": "Εκ νέου σύνδεση",
+        "location": {
+          "startingColumn": 27,
+          "startingLine": 220
+        }
+      },
+      {
+        "comment": "",
+        "key": "Ημερήσιο Όριο",
+        "location": {
+          "startingColumn": 30,
+          "startingLine": 259
+        }
+      },
+      {
+        "comment": "",
+        "key": "Πόσα sticks την ημέρα;",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 239
+        }
+      },
+      {
+        "comment": "",
+        "key": "Ημερήσιο όριο",
+        "location": {
+          "startingColumn": 24,
+          "startingLine": 242
+        }
+      },
+      {
+        "comment": "",
+        "key": "Αποθήκευση",
+        "location": {
+          "startingColumn": 24,
+          "startingLine": 254
+        }
+      },
+      {
+        "comment": "",
+        "key": "%lld sticks",
+        "location": {
+          "startingColumn": 30,
+          "startingLine": 244
+        }
+      }
+    ]
+  },
+  "version": 1
+}

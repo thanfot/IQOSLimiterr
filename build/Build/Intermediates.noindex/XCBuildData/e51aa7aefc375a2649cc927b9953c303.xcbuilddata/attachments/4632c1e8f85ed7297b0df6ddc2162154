@@ -1,0 +1,39 @@
+{
+  "" : {
+    "diagnostics" : "/Users/thanfot/Documents/IQOS/IQOSLimiter/build/Build/Intermediates.noindex/IQOSLimiter.build/Debug/IQOSLimiter.build/Objects-normal/arm64/IQOSLimiter-primary.dia",
+    "emit-module-dependencies" : "/Users/thanfot/Documents/IQOS/IQOSLimiter/build/Build/Intermediates.noindex/IQOSLimiter.build/Debug/IQOSLimiter.build/Objects-normal/arm64/IQOSLimiter-primary-emit-module.d",
+    "emit-module-diagnostics" : "/Users/thanfot/Documents/IQOS/IQOSLimiter/build/Build/Intermediates.noindex/IQOSLimiter.build/Debug/IQOSLimiter.build/Objects-normal/arm64/IQOSLimiter-primary-emit-module.dia",
+    "pch" : "/Users/thanfot/Documents/IQOS/IQOSLimiter/build/Build/Intermediates.noindex/IQOSLimiter.build/Debug/IQOSLimiter.build/Objects-normal/arm64/IQOSLimiter-primary-Bridging-header.pch",
+    "swift-dependencies" : "/Users/thanfot/Documents/IQOS/IQOSLimiter/build/Build/Intermediates.noindex/IQOSLimiter.build/Debug/IQOSLimiter.build/Objects-normal/arm64/IQOSLimiter-primary.swiftdeps"
+  },
+  "/Users/thanfot/Documents/IQOS/IQOSLimiter/IQOSLimiter/ContentView.swift" : {
+    "const-values" : "/Users/thanfot/Documents/IQOS/IQOSLimiter/build/Build/Intermediates.noindex/IQOSLimiter.build/Debug/IQOSLimiter.build/Objects-normal/arm64/ContentView.swiftconstvalues",
+    "dependencies" : "/Users/thanfot/Documents/IQOS/IQOSLimiter/build/Build/Intermediates.noindex/IQOSLimiter.build/Debug/IQOSLimiter.build/Objects-normal/arm64/ContentView.d",
+    "diagnostics" : "/Users/thanfot/Documents/IQOS/IQOSLimiter/build/Build/Intermediates.noindex/IQOSLimiter.build/Debug/IQOSLimiter.build/Objects-normal/arm64/ContentView.dia",
+    "index-unit-output-path" : "/IQOSLimiter.build/Debug/IQOSLimiter.build/Objects-normal/arm64/ContentView.o",
+    "llvm-bc" : "/Users/thanfot/Documents/IQOS/IQOSLimiter/build/Build/Intermediates.noindex/IQOSLimiter.build/Debug/IQOSLimiter.build/Objects-normal/arm64/ContentView.bc",
+    "object" : "/Users/thanfot/Documents/IQOS/IQOSLimiter/build/Build/Intermediates.noindex/IQOSLimiter.build/Debug/IQOSLimiter.build/Objects-normal/arm64/ContentView.o",
+    "swift-dependencies" : "/Users/thanfot/Documents/IQOS/IQOSLimiter/build/Build/Intermediates.noindex/IQOSLimiter.build/Debug/IQOSLimiter.build/Objects-normal/arm64/ContentView.swiftdeps",
+    "swiftmodule" : "/Users/thanfot/Documents/IQOS/IQOSLimiter/build/Build/Intermediates.noindex/IQOSLimiter.build/Debug/IQOSLimiter.build/Objects-normal/arm64/ContentView~partial.swiftmodule"
+  },
+  "/Users/thanfot/Documents/IQOS/IQOSLimiter/IQOSLimiter/IQOSBLEManager.swift" : {
+    "const-values" : "/Users/thanfot/Documents/IQOS/IQOSLimiter/build/Build/Intermediates.noindex/IQOSLimiter.build/Debug/IQOSLimiter.build/Objects-normal/arm64/IQOSBLEManager.swiftconstvalues",
+    "dependencies" : "/Users/thanfot/Documents/IQOS/IQOSLimiter/build/Build/Intermediates.noindex/IQOSLimiter.build/Debug/IQOSLimiter.build/Objects-normal/arm64/IQOSBLEManager.d",
+    "diagnostics" : "/Users/thanfot/Documents/IQOS/IQOSLimiter/build/Build/Intermediates.noindex/IQOSLimiter.build/Debug/IQOSLimiter.build/Objects-normal/arm64/IQOSBLEManager.dia",
+    "index-unit-output-path" : "/IQOSLimiter.build/Debug/IQOSLimiter.build/Objects-normal/arm64/IQOSBLEManager.o",
+    "llvm-bc" : "/Users/thanfot/Documents/IQOS/IQOSLimiter/build/Build/Intermediates.noindex/IQOSLimiter.build/Debug/IQOSLimiter.build/Objects-normal/arm64/IQOSBLEManager.bc",
+    "object" : "/Users/thanfot/Documents/IQOS/IQOSLimiter/build/Build/Intermediates.noindex/IQOSLimiter.build/Debug/IQOSLimiter.build/Objects-normal/arm64/IQOSBLEManager.o",
+    "swift-dependencies" : "/Users/thanfot/Documents/IQOS/IQOSLimiter/build/Build/Intermediates.noindex/IQOSLimiter.build/Debug/IQOSLimiter.build/Objects-normal/arm64/IQOSBLEManager.swiftdeps",
+    "swiftmodule" : "/Users/thanfot/Documents/IQOS/IQOSLimiter/build/Build/Intermediates.noindex/IQOSLimiter.build/Debug/IQOSLimiter.build/Objects-normal/arm64/IQOSBLEManager~partial.swiftmodule"
+  },
+  "/Users/thanfot/Documents/IQOS/IQOSLimiter/IQOSLimiter/IQOSLimiterApp.swift" : {
+    "const-values" : "/Users/thanfot/Documents/IQOS/IQOSLimiter/build/Build/Intermediates.noindex/IQOSLimiter.build/Debug/IQOSLimiter.build/Objects-normal/arm64/IQOSLimiterApp.swiftconstvalues",
+    "dependencies" : "/Users/thanfot/Documents/IQOS/IQOSLimiter/build/Build/Intermediates.noindex/IQOSLimiter.build/Debug/IQOSLimiter.build/Objects-normal/arm64/IQOSLimiterApp.d",
+    "diagnostics" : "/Users/thanfot/Documents/IQOS/IQOSLimiter/build/Build/Intermediates.noindex/IQOSLimiter.build/Debug/IQOSLimiter.build/Objects-normal/arm64/IQOSLimiterApp.dia",
+    "index-unit-output-path" : "/IQOSLimiter.build/Debug/IQOSLimiter.build/Objects-normal/arm64/IQOSLimiterApp.o",
+    "llvm-bc" : "/Users/thanfot/Documents/IQOS/IQOSLimiter/build/Build/Intermediates.noindex/IQOSLimiter.build/Debug/IQOSLimiter.build/Objects-normal/arm64/IQOSLimiterApp.bc",
+    "object" : "/Users/thanfot/Documents/IQOS/IQOSLimiter/build/Build/Intermediates.noindex/IQOSLimiter.build/Debug/IQOSLimiter.build/Objects-normal/arm64/IQOSLimiterApp.o",
+    "swift-dependencies" : "/Users/thanfot/Documents/IQOS/IQOSLimiter/build/Build/Intermediates.noindex/IQOSLimiter.build/Debug/IQOSLimiter.build/Objects-normal/arm64/IQOSLimiterApp.swiftdeps",
+    "swiftmodule" : "/Users/thanfot/Documents/IQOS/IQOSLimiter/build/Build/Intermediates.noindex/IQOSLimiter.build/Debug/IQOSLimiter.build/Objects-normal/arm64/IQOSLimiterApp~partial.swiftmodule"
+  }
+}
