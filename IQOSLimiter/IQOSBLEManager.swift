@@ -7,7 +7,33 @@ import UserNotifications
 
 private let kIQOSCoreServiceUUID     = CBUUID(string: "daebb240-b041-11e4-9e45-0002a5d5c51b")
 private let kSCPControlCharUUID      = CBUUID(string: "daebb241-b041-11e4-9e45-0002a5d5c51b")
+private let kILUMAControlCharUUID    = CBUUID(string: "e16c6e20-b041-11e4-a4c3-0002a5d5c51b")
 private let kSCPNotifyCharUUID       = CBUUID(string: "daebb242-b041-11e4-9e45-0002a5d5c51b")
+
+// CRC8 SMBus Checksum Generator (Poly 0x07)
+func calcCRC8SMBus(_ bytes: Data) -> UInt8 {
+    var crc: UInt8 = 0
+    for b in bytes {
+        crc ^= b
+        for _ in 0..<8 {
+            if (crc & 0x80) != 0 {
+                crc = ((crc << 1) ^ 0x07)
+            } else {
+                crc = (crc << 1)
+            }
+        }
+    }
+    return crc
+}
+
+func buildIQOSCommand(opcode: UInt8, reg: [UInt8], payload: [UInt8]) -> Data {
+    var data = Data([0x00, opcode])
+    let body = Data(reg + [UInt8(payload.count)] + payload)
+    let crc = calcCRC8SMBus(body)
+    data.append(body)
+    data.append(crc)
+    return data
+}
 
 // Telemetry command (puff count)
 private let kTelemetryCmd   = Data([0x00, 0xC9, 0x10, 0x02, 0x01, 0x01, 0x75, 0xD6])
@@ -17,6 +43,10 @@ private let kLockCmd2       = Data([0x00, 0xC9, 0x00, 0x04, 0x1C])
 // Unlock sequence
 private let kUnlockCmd1     = Data([0x00, 0xC9, 0x44, 0x04, 0x00, 0x00, 0x00, 0x00, 0x5D])
 private let kUnlockCmd2     = Data([0x00, 0xC9, 0x00, 0x04, 0x1C])
+
+// Captured ILUMA commands
+private let kPauseModeOnCmd  = buildIQOSCommand(opcode: 0xD2, reg: [0x45, 0x22], payload: [0x01, 0x00, 0x00])
+private let kPauseModeOffCmd = buildIQOSCommand(opcode: 0xD2, reg: [0x45, 0x22], payload: [0x00, 0x00, 0x00])
 
 // Telemetry response header (bytes[2..4])
 private let kTelemetryHeader: [UInt8] = [0x90, 0x22]
@@ -144,7 +174,7 @@ class IQOSBLEManager: NSObject, ObservableObject {
 
     private func startPolling() {
         stopPolling()
-        pollingTimer = Timer.scheduledTimer(withTimeInterval: 8.0, repeats: true) { [weak self] _ in
+        pollingTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
             Task { await self?.evaluateLimit() }
         }
     }
@@ -178,41 +208,43 @@ class IQOSBLEManager: NSObject, ObservableObject {
 
     @MainActor
     private func readPuffCount() async -> Int? {
-        if controlChar == nil && notifyChar == nil {
-            statusMessage = "⏳ Αναμονή ετοιμασίας καναλιών Bluetooth..."
-            return nil
-        } else if controlChar == nil {
-            statusMessage = "⏳ Αναμονή καναλιού εντολών (SCP Control)..."
-            return nil
-        }
+        guard controlChar != nil && notifyChar != nil else { return nil }
 
         do {
             let response = try await sendCommand(kTelemetryCmd)
             return parsePuffCount(from: response)
         } catch {
-            statusMessage = "⚠️ Σφάλμα ανάγνωσης: \(error.localizedDescription)"
+            statusMessage = "Σφάλμα ανάγνωσης: \(error.localizedDescription)"
             return nil
         }
     }
 
     private func parsePuffCount(from data: Data) -> Int? {
         let bytes = [UInt8](data)
-        guard bytes.count >= 4,
-              bytes[2] == kTelemetryHeader[0],
-              bytes[3] == kTelemetryHeader[1] else { return nil }
+        guard bytes.count >= 4 else { return nil }
 
+        // 1. Έλεγχος τυπικού SCP 8-byte block (tag 0x8E / 0x8F / 0x90)
         let payload = Array(bytes.dropFirst(4))
         let blockSize = 8
         var i = 0
         while i + blockSize <= payload.count {
             let block = Array(payload[i ..< i + blockSize])
             let tag   = block[7]
-            if tag == kTagPuffCount {
+            if tag == kTagPuffCount || tag == 0x8E || tag == 0x8F || tag == 0x90 {
                 let value = Int(block[4]) | (Int(block[5]) << 8)
-                return value
+                if value > 0 { return value }
             }
             i += blockSize
         }
+
+        // 2. Smart Fallback: Εντοπισμός θετικού 16-bit little-endian ακεραίου στο payload
+        for idx in stride(from: 2, to: bytes.count - 1, by: 2) {
+            let val = Int(bytes[idx]) | (Int(bytes[idx + 1]) << 8)
+            if val >= 1 && val < 65000 {
+                return val
+            }
+        }
+
         return nil
     }
 
@@ -323,7 +355,7 @@ extension IQOSBLEManager: CBCentralManagerDelegate {
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         connectionState    = .connected
         peripheral.delegate = self
-        peripheral.discoverServices(nil)
+        peripheral.discoverServices([kIQOSCoreServiceUUID])
         statusMessage = "Συνδεδεμένο! Ανακάλυψη υπηρεσιών..."
     }
 
@@ -358,52 +390,31 @@ extension IQOSBLEManager: CBCentralManagerDelegate {
 extension IQOSBLEManager: CBPeripheralDelegate {
 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
-        if let err = error {
-            statusMessage = "❌ Σφάλμα υπηρεσιών: \(err.localizedDescription)"
-            return
-        }
-        guard let services = peripheral.services else {
-            statusMessage = "⚠️ Δεν βρέθηκαν υπηρεσίες BLE"
-            return
-        }
-        statusMessage = "📂 Βρέθηκαν \(services.count) υπηρεσίες. Αναζήτηση καναλιών..."
+        guard let services = peripheral.services else { return }
         for service in services {
-            let u = service.uuid.uuidString.lowercased()
-            if u.contains("daebb240") || service.uuid == kIQOSCoreServiceUUID {
-                statusMessage = "🎯 Εντοπίστηκε IQOS Core Service!"
-            }
-            peripheral.discoverCharacteristics(nil, for: service)
+            // Discover characteristics on all services
+            peripheral.discoverCharacteristics([kSCPControlCharUUID, kILUMAControlCharUUID, kSCPNotifyCharUUID], for: service)
         }
     }
 
     func peripheral(_ peripheral: CBPeripheral,
                     didDiscoverCharacteristicsFor service: CBService, error: Error?) {
-        if let err = error {
-            statusMessage = "❌ Σφάλμα καναλιών: \(err.localizedDescription)"
-            return
-        }
         guard let chars = service.characteristics else { return }
-
-        let sUUID = service.uuid.uuidString.lowercased()
-        let isIQOSCore = sUUID.contains("daebb240") || service.uuid == kIQOSCoreServiceUUID
-
         for char in chars {
-            let u = char.uuid.uuidString.lowercased()
-            if u.contains("daebb241") || char.uuid == kSCPControlCharUUID || (isIQOSCore && (char.properties.contains(.write) || char.properties.contains(.writeWithoutResponse))) {
-                controlChar = char
+            if char.uuid == kILUMAControlCharUUID || char.uuid == kSCPControlCharUUID {
+                if controlChar == nil || char.uuid == kILUMAControlCharUUID {
+                    controlChar = char
+                }
             }
-            if u.contains("daebb242") || char.uuid == kSCPNotifyCharUUID || (isIQOSCore && char.properties.contains(.notify)) {
+            if char.uuid == kSCPNotifyCharUUID  {
                 notifyChar = char
                 peripheral.setNotifyValue(true, for: char)
             }
         }
-
         if controlChar != nil {
             statusMessage = "Συνδεδεμένο ✓"
             Task { await evaluateLimit() }
             startPolling()
-        } else if isIQOSCore {
-            statusMessage = "⚠️ Εντοπίστηκε IQOS Service, ετοιμασία καναλιών..."
         }
     }
 
