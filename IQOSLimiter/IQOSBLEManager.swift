@@ -45,8 +45,9 @@ private let kUnlockCmd1     = Data([0x00, 0xC9, 0x44, 0x04, 0x00, 0x00, 0x00, 0x
 private let kUnlockCmd2     = Data([0x00, 0xC9, 0x00, 0x04, 0x1C])
 
 // Captured ILUMA commands
-private let kPauseModeOnCmd  = buildIQOSCommand(opcode: 0xD2, reg: [0x45, 0x22], payload: [0x01, 0x00, 0x00])
-private let kPauseModeOffCmd = buildIQOSCommand(opcode: 0xD2, reg: [0x45, 0x22], payload: [0x00, 0x00, 0x00])
+private let kPauseModeOnCmd   = buildIQOSCommand(opcode: 0xD2, reg: [0x45, 0x22], payload: [0x01, 0x00, 0x00])
+private let kPauseModeOffCmd  = buildIQOSCommand(opcode: 0xD2, reg: [0x45, 0x22], payload: [0x00, 0x00, 0x00])
+private let kIlumaPowerOffCmd = buildIQOSCommand(opcode: 0xD2, reg: [0x05, 0x22], payload: [0x00, 0x00, 0x00])
 
 // Telemetry response header (bytes[2..4])
 private let kTelemetryHeader: [UInt8] = [0x90, 0x22]
@@ -113,12 +114,70 @@ class IQOSBLEManager: NSObject, ObservableObject {
     // ── Published state ───────────────────────────────────────────────────────
     @Published var connectionState: ConnectionState = .idle
     @Published var puffsToday: Int    = DailyState.puffsToday
+    @Published var rawPuffsToday: Int = 0
     @Published var dailyLimit: Int    = UserDefaults.standard.object(forKey: "iqos.limit") == nil
                                             ? 5
                                             : UserDefaults.standard.integer(forKey: "iqos.limit")
     @Published var isLocked: Bool     = DailyState.locked
     @Published var statusMessage: String = "Άνοιξε την εφαρμογή για να ξεκινήσει"
     @Published var lifetimePuffs: Int = 0
+    @Published var totalLifetimeSticks: Int = UserDefaults.standard.integer(forKey: "iqos.totalLifetimeSticks")
+    @Published var rawTelemetryBytes: [UInt8] = []
+    @Published var lastGATTPackets: [[String: String]] = []
+
+    private func recordGATTResponse(characteristicUUID: String, data: Data) {
+        let bytes = [UInt8](data)
+        let hex = bytes.map { String(format: "%02X", $0) }.joined(separator: " ")
+        Task { @MainActor in
+            self.rawTelemetryBytes = bytes
+            self.lastGATTPackets.append([
+                "char_uuid": characteristicUUID,
+                "length": "\(bytes.count)",
+                "raw_hex": hex,
+                "time": Date().description
+            ])
+            if self.lastGATTPackets.count > 20 {
+                self.lastGATTPackets.removeFirst()
+            }
+        }
+    }
+
+    func exportRawDeviceData() -> String {
+        let info: [String: Any] = [
+            "raw_bluetooth_packets_from_iqos": lastGATTPackets,
+            "device_name": iqosPeripheral?.name ?? "IQOS ILUMA i PRIME",
+            "device_uuid": iqosPeripheral?.identifier.uuidString ?? "N/A",
+            "connection_state": connectionState.label,
+            "puffs_today_sticks": puffsToday,
+            "raw_puffs_today": rawPuffsToday,
+            "total_lifetime_sticks": totalLifetimeSticks,
+            "lifetime_puffs_raw": lifetimePuffs,
+            "daily_limit": dailyLimit,
+            "is_locked": isLocked,
+            "daily_baseline": DailyState.baseline ?? 0,
+            "last_status_message": statusMessage,
+            "last_telemetry_hex": rawTelemetryBytes.map { String(format: "%02X", $0) }.joined(separator: " "),
+            "device_settings": [
+                "pause_mode": pauseModeEnabled,
+                "flex_puff": flexPuffEnabled,
+                "autostart": autostartEnabled,
+                "vibration": vibrationEnabled
+            ],
+            "timestamp": Date().description
+        ]
+        
+        if let jsonData = try? JSONSerialization.data(withJSONObject: info, options: .prettyPrinted),
+           let jsonString = String(data: jsonData, encoding: .utf8) {
+            return jsonString
+        }
+        return "{}"
+    }
+
+    // ── IQOS Settings Published State ─────────────────────────────────────────
+    @Published var pauseModeEnabled: Bool = false
+    @Published var flexPuffEnabled: Bool  = true
+    @Published var autostartEnabled: Bool = true
+    @Published var vibrationEnabled: Bool = true
 
     // ── Private BLE state ─────────────────────────────────────────────────────
     private var centralManager: CBCentralManager!
@@ -148,7 +207,8 @@ class IQOSBLEManager: NSObject, ObservableObject {
         }
         connectionState = .scanning
         statusMessage   = "Σάρωση για IQOS..."
-        centralManager.scanForPeripherals(withServices: [kIQOSCoreServiceUUID],
+        // Σάρωση όλων των συσκευών χωρίς περιορισμό Service UUID
+        centralManager.scanForPeripherals(withServices: nil,
                                           options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])
     }
 
@@ -158,12 +218,72 @@ class IQOSBLEManager: NSObject, ObservableObject {
         Task { await evaluateLimit() }
     }
 
+    func setTotalLifetimeSticks(_ count: Int) {
+        totalLifetimeSticks = count
+        UserDefaults.standard.set(count, forKey: "iqos.totalLifetimeSticks")
+    }
+
     func manualLock() {
         Task { await sendLock() }
     }
 
     func manualUnlock() {
         Task { await sendUnlock() }
+    }
+
+    func togglePauseMode(_ enabled: Bool) {
+        pauseModeEnabled = enabled
+        let cmd = enabled ? kPauseModeOnCmd : kPauseModeOffCmd
+        sendNoResponse(cmd)
+    }
+
+    func toggleFlexPuff(_ enabled: Bool) {
+        flexPuffEnabled = enabled
+        let cmd = buildIQOSCommand(opcode: 0xD2, reg: [0x47, 0x24], payload: [enabled ? 0x01 : 0x00, 0x00])
+        sendNoResponse(cmd)
+    }
+
+    func toggleAutostart(_ enabled: Bool) {
+        autostartEnabled = enabled
+        let cmd = buildIQOSCommand(opcode: 0xD2, reg: [0x40, 0x24], payload: [enabled ? 0x01 : 0x00, 0x00])
+        sendNoResponse(cmd)
+    }
+
+    func toggleVibration(_ enabled: Bool) {
+        vibrationEnabled = enabled
+        let cmd = buildIQOSCommand(opcode: 0xD2, reg: [0x12, 0x22], payload: [enabled ? 0x01 : 0x00, 0x00])
+        sendNoResponse(cmd)
+    }
+
+    func addStick() {
+        puffsToday += 1
+        totalLifetimeSticks += 1
+        DailyState.puffsToday = puffsToday
+        UserDefaults.standard.set(totalLifetimeSticks, forKey: "iqos.totalLifetimeSticks")
+        Task { await evaluateLimit() }
+    }
+
+    func removeStick() {
+        puffsToday = max(0, puffsToday - 1)
+        totalLifetimeSticks = max(0, totalLifetimeSticks - 1)
+        DailyState.puffsToday = puffsToday
+        UserDefaults.standard.set(totalLifetimeSticks, forKey: "iqos.totalLifetimeSticks")
+        Task { await evaluateLimit() }
+    }
+
+    func resetTodayBaseline() {
+        Task { @MainActor in
+            let count = await readPuffCount() ?? (self.lifetimePuffs > 0 ? self.lifetimePuffs : 1)
+            DailyState.baseline = count
+            self.lifetimePuffs = count
+            self.puffsToday = 0
+            self.rawPuffsToday = 0
+            DailyState.puffsToday = 0
+            self.statusMessage = "📌 Μηδενισμός ημέρας επιτυχής (0 sticks σήμερα)"
+            if self.isLocked {
+                await self.sendUnlock()
+            }
+        }
     }
 
     func manualRefresh() {
@@ -185,62 +305,84 @@ class IQOSBLEManager: NSObject, ObservableObject {
     }
 
 
-    // ── Protocol helpers ──────────────────────────────────────────────────────
-
-    private func sendCommand(_ data: Data) async throws -> Data {
+    private func sendCommand(_ data: Data, timeoutSeconds: Double = 2.0) async throws -> Data {
         guard let peripheral = iqosPeripheral,
               let char = controlChar,
               peripheral.state == .connected else {
-            throw NSError(domain: "IQOSLimiter", code: 1, userInfo: [NSLocalizedDescriptionKey: "Λείπει το κανάλι αποστολής εντολών (SCP Write)"])
+            throw NSError(domain: "IQOSLimiter", code: 1, userInfo: [NSLocalizedDescriptionKey: "Λείπει το κανάλι αποστολής εντολών"])
         }
-        return try await withCheckedThrowingContinuation { continuation in
+        let writeType: CBCharacteristicWriteType = char.properties.contains(.writeWithoutResponse) ? .withoutResponse : .withResponse
+
+        if let old = pendingResponse {
+            pendingResponse = nil
+            old.resume(throwing: NSError(domain: "IQOSLimiter", code: 4, userInfo: [NSLocalizedDescriptionKey: "Cancelled by new command"]))
+        }
+
+        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, Error>) in
             self.pendingResponse = continuation
-            peripheral.writeValue(data, for: char, type: .withoutResponse)
+            peripheral.writeValue(data, for: char, type: writeType)
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + timeoutSeconds) { [weak self] in
+                guard let self = self else { return }
+                if let pending = self.pendingResponse {
+                    self.pendingResponse = nil
+                    pending.resume(throwing: NSError(domain: "IQOSLimiter", code: 2, userInfo: [NSLocalizedDescriptionKey: "Timeout αναμονής Bluetooth"]))
+                }
+            }
         }
     }
 
     private func sendNoResponse(_ data: Data) {
         guard let peripheral = iqosPeripheral, let char = controlChar else { return }
-        peripheral.writeValue(data, for: char, type: .withoutResponse)
+        let writeType: CBCharacteristicWriteType = char.properties.contains(.writeWithoutResponse) ? .withoutResponse : .withResponse
+        peripheral.writeValue(data, for: char, type: writeType)
     }
 
     // ── Telemetry ─────────────────────────────────────────────────────────────
 
     @MainActor
     private func readPuffCount() async -> Int? {
-        guard controlChar != nil && notifyChar != nil else { return nil }
+        guard controlChar != nil else { return nil }
 
         do {
             let response = try await sendCommand(kTelemetryCmd)
-            return parsePuffCount(from: response)
-        } catch {
-            statusMessage = "Σφάλμα ανάγνωσης: \(error.localizedDescription)"
-            return nil
-        }
+            recordGATTResponse(characteristicUUID: controlChar?.uuid.uuidString ?? "ILUMA", data: response)
+            if let count = parsePuffCount(from: response) { return count }
+        } catch {}
+
+        // Fallback: ILUMA 0x1007 Log Query
+        do {
+            let ilumaCmd = buildIQOSCommand(opcode: 0xC9, reg: [0x10, 0x07], payload: [0x01, 0x02, 0x00, 0x01])
+            let response = try await sendCommand(ilumaCmd)
+            recordGATTResponse(characteristicUUID: controlChar?.uuid.uuidString ?? "ILUMA", data: response)
+            if let count = parsePuffCount(from: response) { return count }
+        } catch {}
+
+        return nil
     }
 
     private func parsePuffCount(from data: Data) -> Int? {
         let bytes = [UInt8](data)
-        guard bytes.count >= 4 else { return nil }
+        guard bytes.count >= 8 else { return nil }
 
-        // 1. Έλεγχος τυπικού SCP 8-byte block (tag 0x8E / 0x8F / 0x90)
+        // 1. TLV Block Parsing
         let payload = Array(bytes.dropFirst(4))
         let blockSize = 8
         var i = 0
         while i + blockSize <= payload.count {
             let block = Array(payload[i ..< i + blockSize])
-            let tag   = block[7]
-            if tag == kTagPuffCount || tag == 0x8E || tag == 0x8F || tag == 0x90 {
-                let value = Int(block[4]) | (Int(block[5]) << 8)
-                if value > 0 { return value }
+            let value = Int(block[4]) | (Int(block[5]) << 8)
+            // Αποκλείουμε μόνο τις επικεφαλίδες και τα echo bytes (256, 257, 8848, 1808)
+            if value > 0 && value != 256 && value != 257 && value != 8848 && value != 1808 {
+                return value
             }
             i += blockSize
         }
 
-        // 2. Smart Fallback: Εντοπισμός θετικού 16-bit little-endian ακεραίου στο payload
-        for idx in stride(from: 2, to: bytes.count - 1, by: 2) {
+        // 2. Fallback: Αναζήτηση ακέραιου
+        for idx in stride(from: 5, to: bytes.count - 1, by: 1) {
             let val = Int(bytes[idx]) | (Int(bytes[idx + 1]) << 8)
-            if val >= 1 && val < 65000 {
+            if val >= 10 && val < 65000 && val != 256 && val != 257 && val != 8848 && val != 1808 {
                 return val
             }
         }
@@ -253,8 +395,12 @@ class IQOSBLEManager: NSObject, ObservableObject {
     @MainActor
     private func sendLock() async {
         sendNoResponse(kLockCmd1)
-        try? await Task.sleep(nanoseconds: 100_000_000) // 0.1s
+        try? await Task.sleep(nanoseconds: 300_000_000) // 0.3s
         sendNoResponse(kLockCmd2)
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        sendNoResponse(kIlumaPowerOffCmd)
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        sendNoResponse(kPauseModeOnCmd)
         isLocked         = true
         DailyState.locked = true
         statusMessage     = "🔒 Κλειδωμένο — Επίτευξες το ημερήσιο όριο!"
@@ -265,8 +411,10 @@ class IQOSBLEManager: NSObject, ObservableObject {
     @MainActor
     private func sendUnlock() async {
         sendNoResponse(kUnlockCmd1)
-        try? await Task.sleep(nanoseconds: 100_000_000)
+        try? await Task.sleep(nanoseconds: 300_000_000) // 0.3s
         sendNoResponse(kUnlockCmd2)
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        sendNoResponse(kPauseModeOffCmd)
         isLocked         = false
         DailyState.locked = false
         statusMessage     = "🔓 Ξεκλειδωμένο"
@@ -276,27 +424,43 @@ class IQOSBLEManager: NSObject, ObservableObject {
 
     @MainActor
     func evaluateLimit() async {
+        DailyState.resetIfNewDay()
+
         guard let lifetimeCount = await readPuffCount() else { return }
 
         lifetimePuffs = lifetimeCount
-
-        // Ορισμός baseline αν είναι πρώτη φορά σήμερα
-        if DailyState.baseline == nil {
-            DailyState.baseline = lifetimeCount
-            statusMessage = "📌 Baseline: \(lifetimeCount) puffs"
+        if totalLifetimeSticks == 0 {
+            setTotalLifetimeSticks(lifetimeCount)
         }
 
-        let today = max(0, lifetimeCount - (DailyState.baseline ?? lifetimeCount))
-        DailyState.puffsToday = today
-        puffsToday = today
+        // Ορισμός baseline αν είναι πρώτη φορά σήμερα ή αν το baseline είναι 0/άκυρο
+        let currentBaseline = DailyState.baseline ?? 0
+        if currentBaseline <= 0 || currentBaseline > lifetimeCount {
+            DailyState.baseline = lifetimeCount
+            statusMessage = "📌 Σημεία εκκίνησης: \(lifetimeCount) puffs"
+        }
 
-        let remaining = dailyLimit - today
+        let diff = max(0, lifetimeCount - (DailyState.baseline ?? lifetimeCount))
+        rawPuffsToday = diff
 
-        if today >= dailyLimit {
-            statusMessage = "🚫 Όριο! \(today)/\(dailyLimit) sticks"
+        // Κάθε αύξηση κατά 14-18 μονάδες από τη συσκευή αντιστοιχεί σε ακριβώς +1 Stick (π.χ. 1/20)
+        let sticksToday: Int
+        if diff <= 0 {
+            sticksToday = 0
+        } else {
+            sticksToday = (diff - 1) / 14 + 1
+        }
+
+        puffsToday = sticksToday
+        DailyState.puffsToday = sticksToday
+
+        let remaining = max(0, dailyLimit - sticksToday)
+
+        if sticksToday >= dailyLimit {
+            statusMessage = "🚫 Όριο! \(sticksToday)/\(dailyLimit) sticks"
             if !isLocked { await sendLock() }
         } else {
-            statusMessage = "✅ \(today)/\(dailyLimit) sticks — Απομένουν \(remaining)"
+            statusMessage = "✅ \(sticksToday)/\(dailyLimit) sticks — Απομένουν \(remaining)"
             if isLocked { await sendUnlock() }  // νέα μέρα, ξεκλείδωμα
         }
     }
@@ -344,18 +508,25 @@ extension IQOSBLEManager: CBCentralManagerDelegate {
                         didDiscover peripheral: CBPeripheral,
                         advertisementData: [String: Any],
                         rssi RSSI: NSNumber) {
+        let name = peripheral.name ?? (advertisementData[CBAdvertisementDataLocalNameKey] as? String) ?? ""
+        let upperName = name.uppercased()
+
+        // Αγνοούμε συσκευές που ΔΕΝ είναι IQOS (π.χ. Τηλεόραση, Ηχεία)
+        guard upperName.contains("IQOS") || upperName.contains("ILUMA") || upperName.contains("DUO") else { return }
+
         guard iqosPeripheral == nil else { return }
         central.stopScan()
         iqosPeripheral  = peripheral
         connectionState = .connecting
-        statusMessage   = "Σύνδεση με \(peripheral.name ?? "IQOS")..."
+        statusMessage   = "Σύνδεση με \(name)..."
         central.connect(peripheral, options: nil)
     }
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         connectionState    = .connected
         peripheral.delegate = self
-        peripheral.discoverServices([kIQOSCoreServiceUUID])
+        // Discover ALL services on IQOS ILUMA
+        peripheral.discoverServices(nil)
         statusMessage = "Συνδεδεμένο! Ανακάλυψη υπηρεσιών..."
     }
 
@@ -392,8 +563,8 @@ extension IQOSBLEManager: CBPeripheralDelegate {
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         guard let services = peripheral.services else { return }
         for service in services {
-            // Discover characteristics on all services
-            peripheral.discoverCharacteristics([kSCPControlCharUUID, kILUMAControlCharUUID, kSCPNotifyCharUUID], for: service)
+            // Discover ALL characteristics under every service
+            peripheral.discoverCharacteristics(nil, for: service)
         }
     }
 
@@ -401,18 +572,23 @@ extension IQOSBLEManager: CBPeripheralDelegate {
                     didDiscoverCharacteristicsFor service: CBService, error: Error?) {
         guard let chars = service.characteristics else { return }
         for char in chars {
-            if char.uuid == kILUMAControlCharUUID || char.uuid == kSCPControlCharUUID {
+            let props = char.properties
+            // Έλεγχος για θύρα εγγραφής (Write / WriteWithoutResponse)
+            if char.uuid == kILUMAControlCharUUID || char.uuid == kSCPControlCharUUID || props.contains(.write) || props.contains(.writeWithoutResponse) {
                 if controlChar == nil || char.uuid == kILUMAControlCharUUID {
                     controlChar = char
                 }
             }
-            if char.uuid == kSCPNotifyCharUUID  {
-                notifyChar = char
-                peripheral.setNotifyValue(true, for: char)
+            // Έλεγχος για θύρα ειδοποιήσεων (Notify / Indicate)
+            if char.uuid == kSCPNotifyCharUUID || props.contains(.notify) || props.contains(.indicate) {
+                if notifyChar == nil {
+                    notifyChar = char
+                    peripheral.setNotifyValue(true, for: char)
+                }
             }
         }
         if controlChar != nil {
-            statusMessage = "Συνδεδεμένο ✓"
+            statusMessage = "Συνδεδεμένο ✓ (Έτοιμο για εντολές)"
             Task { await evaluateLimit() }
             startPolling()
         }
@@ -420,13 +596,25 @@ extension IQOSBLEManager: CBPeripheralDelegate {
 
     func peripheral(_ peripheral: CBPeripheral,
                     didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
-        guard characteristic.uuid == kSCPNotifyCharUUID,
-              let data = characteristic.value else { return }
+        guard let data = characteristic.value else { return }
 
-        // Ολοκλήρωση pending async request
+        let bytes = [UInt8](data)
+        recordGATTResponse(characteristicUUID: characteristic.uuid.uuidString, data: data)
+
+        // 1. Ολοκλήρωση pending async request αν υπάρχει
         if let continuation = pendingResponse {
+            // Φιλτράρισμα ECHO πακέτων (Short packets <= 8 bytes)
+            if bytes.count <= 8 && bytes.count >= 6 && bytes[0] == 0x00 && bytes[1] == 0xC9 && bytes[4] == 0x01 && bytes[5] == 0x01 {
+                return
+            }
             pendingResponse = nil
             continuation.resume(returning: data)
+            return
+        }
+
+        // 2. Ενημέρωση telemetry για ασφαλή υπολογισμό ορίου
+        Task { @MainActor in
+            await self.evaluateLimit()
         }
     }
 
