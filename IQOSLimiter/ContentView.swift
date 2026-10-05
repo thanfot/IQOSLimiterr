@@ -29,6 +29,9 @@ struct ContentView: View {
                     // ── IQOS Device Controls & Settings ───────────────────────
                     DeviceSettingsSection(ble: ble)
 
+                    // ── Debug: decoded telemetry fields ──────────────────────
+                    TelemetryFieldsSection(ble: ble)
+
                 }
                 .padding()
             }
@@ -131,11 +134,6 @@ struct ProgressRing: View {
                 Text("/ \(limit) sticks")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
-                if ble.rawPuffsToday > 0 {
-                    Text("(\(ble.rawPuffsToday) puffs)")
-                        .font(.caption.bold())
-                        .foregroundStyle(.orange)
-                }
                 if !isOver {
                     Text("Απομένουν \(remaining)")
                         .font(.caption)
@@ -175,7 +173,7 @@ struct StatsGrid: View {
             StatTile(
                 icon: "flame.fill",
                 color: .orange,
-                title: ble.rawPuffsToday > 0 ? "Σήμερα (\(ble.rawPuffsToday) puffs)" : "Σήμερα",
+                title: "Σήμερα",
                 value: "\(ble.puffsToday)"
             )
             StatTile(
@@ -257,31 +255,6 @@ struct ActionsSection: View {
                             .background(.green.opacity(0.15), in: RoundedRectangle(cornerRadius: 14))
                             .foregroundStyle(.green)
                     }
-                }
-            }
-
-            // Χειροκίνητη Προσθήκη / Αφαίρεση Stick
-            HStack(spacing: 12) {
-                Button {
-                    ble.addStick()
-                } label: {
-                    Label("+1 Stick", systemImage: "plus.circle.fill")
-                        .font(.callout.bold())
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 10)
-                        .background(.orange.opacity(0.15), in: RoundedRectangle(cornerRadius: 12))
-                        .foregroundStyle(.orange)
-                }
-
-                Button {
-                    ble.removeStick()
-                } label: {
-                    Label("-1 Stick", systemImage: "minus.circle.fill")
-                        .font(.callout.bold())
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 10)
-                        .background(.gray.opacity(0.15), in: RoundedRectangle(cornerRadius: 12))
-                        .foregroundStyle(.secondary)
                 }
             }
 
@@ -373,7 +346,7 @@ struct LimitPickerSheet: View {
                     .font(.title2.bold())
 
                 Picker("Ημερήσιο όριο", selection: $limit) {
-                    ForEach(1...20, id: \.self) { n in
+                    ForEach(1...100, id: \.self) { n in
                         Text("\(n) sticks").tag(n)
                     }
                 }
@@ -496,6 +469,46 @@ struct DeviceSettingsSection: View {
             .padding()
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
         }
+    }
+}
+
+// ── Decoded Telemetry Fields (debug) ─────────────────────────────────────────
+struct TelemetryFieldsSection: View {
+    @ObservedObject var ble: IQOSBLEManager
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("🔬 Αποκωδικοποιημένα πεδία")
+                    .font(.headline)
+                if ble.telemetryFields.isEmpty {
+                    Text("(κανένα)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if !ble.telemetryFields.isEmpty {
+                ForEach(ble.telemetryFields) { field in
+                    HStack {
+                        Text(field.tagHex)
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundStyle(field.tagHex == "0x8E" ? .green : .secondary)
+                        Spacer()
+                        Text("\(field.value)")
+                            .font(.system(.caption, design: .monospaced))
+                            .bold()
+                            .foregroundStyle(field.tagHex == "0x8E" ? .green : .primary)
+                    }
+                }
+
+                Text("Το πράσινο tag (0x8E) είναι το puff count. Κάπνισε 1 τερέα και δες ποιο tag αλλάζει.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .padding()
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
     }
 }
 
