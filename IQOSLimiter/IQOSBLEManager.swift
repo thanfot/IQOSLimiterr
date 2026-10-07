@@ -234,9 +234,17 @@ class IQOSBLEManager: NSObject, ObservableObject {
         }
         connectionState = .scanning
         statusMessage   = "Σάρωση για IQOS..."
+        #if os(iOS)
+        // Το iOS CoreBluetooth κρύβει το όνομα της συσκευής (ιδιωτικότητα),
+        // οπότε το peripheral.name είναι κενό και δεν φιλτράρει.
+        // Το IQOS διαφημίζει το core service UUID — φιλτράρουμε με βάση αυτό.
+        centralManager.scanForPeripherals(withServices: [kIQOSCoreServiceUUID],
+                                          options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])
+        #else
         // Σάρωση όλων των συσκευών χωρίς περιορισμό Service UUID
         centralManager.scanForPeripherals(withServices: nil,
                                           options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])
+        #endif
     }
 
     func setDailyLimit(_ limit: Int) {
@@ -554,7 +562,15 @@ extension IQOSBLEManager: CBCentralManagerDelegate {
         if central.state == .poweredOn {
             startScanning()
         } else {
-            statusMessage   = "Bluetooth απενεργοποιημένο"
+            #if os(iOS)
+            if central.authorization == .denied || central.authorization == .restricted {
+                statusMessage = "Άνοιξε: Ρυθμίσεις → Απόρρητο → Bluetooth"
+            } else {
+                statusMessage = "Bluetooth απενεργοποιημένο"
+            }
+            #else
+            statusMessage = "Bluetooth απενεργοποιημένο"
+            #endif
             connectionState = .idle
         }
     }
@@ -563,17 +579,28 @@ extension IQOSBLEManager: CBCentralManagerDelegate {
                         didDiscover peripheral: CBPeripheral,
                         advertisementData: [String: Any],
                         rssi RSSI: NSNumber) {
+        var displayName: String
+
+        #if os(iOS)
+        // Στο iOS το όνομα είναι κενό. Δεχόμαστε μόνο συσκευές που
+        // διαφημίζουν το IQOS core service UUID (επιβεβαιωμένο με capture).
+        let advertised = (advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID]) ?? []
+        guard advertised.contains(kIQOSCoreServiceUUID) else { return }
+        displayName = peripheral.name ?? "IQOS"
+        #else
         let name = peripheral.name ?? (advertisementData[CBAdvertisementDataLocalNameKey] as? String) ?? ""
         let upperName = name.uppercased()
 
         // Αγνοούμε συσκευές που ΔΕΝ είναι IQOS (π.χ. Τηλεόραση, Ηχεία)
         guard upperName.contains("IQOS") || upperName.contains("ILUMA") || upperName.contains("DUO") else { return }
+        displayName = name
+        #endif
 
         guard iqosPeripheral == nil else { return }
         central.stopScan()
         iqosPeripheral  = peripheral
         connectionState = .connecting
-        statusMessage   = "Σύνδεση με \(name)..."
+        statusMessage   = "Σύνδεση με \(displayName)..."
         central.connect(peripheral, options: nil)
     }
 
