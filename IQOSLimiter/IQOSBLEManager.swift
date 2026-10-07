@@ -86,14 +86,6 @@ struct DailyState {
         }
     }
 
-    /// Αν η σημερινή ημέρα είναι ήδη γνωστή, το κλειδωμένο όριο της ημέρας.
-    static var committedLimit: Int? {
-        guard let stored = UserDefaults.standard.string(forKey: keyDate),
-              stored == today else { return nil }
-        guard UserDefaults.standard.object(forKey: keyLimitToday) != nil else { return nil }
-        return UserDefaults.standard.integer(forKey: keyLimitToday)
-    }
-
     static var baseline: Int? {
         get {
             let v = UserDefaults.standard.integer(forKey: keyBaseline)
@@ -249,6 +241,7 @@ class IQOSBLEManager: NSObject, ObservableObject {
     override init() {
         super.init()
         DailyState.resetIfNewDay()
+        syncLimitFromStorage()
         centralManager = CBCentralManager(delegate: self, queue: .main,
                                           options: [CBCentralManagerOptionRestoreIdentifierKey: "iqos.restore"])
         requestNotificationPermission()
@@ -274,6 +267,20 @@ class IQOSBLEManager: NSObject, ObservableObject {
         centralManager.scanForPeripherals(withServices: nil,
                                           options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])
         #endif
+    }
+
+    /// Φέρνει τα όρια από το UserDefaults στα published vars — κλήση μετά κάθε
+    /// DailyState.resetIfNewDay(), αλλιώς το rollover δεν φαίνεται μέχρι restart.
+    private func syncLimitFromStorage() {
+        let ud = UserDefaults.standard
+        if ud.object(forKey: DailyState.keyLimitToday) != nil {
+            dailyLimit = ud.integer(forKey: DailyState.keyLimitToday)
+        }
+        if ud.object(forKey: DailyState.keyLimitNext) != nil {
+            nextDayLimit = ud.integer(forKey: DailyState.keyLimitNext)
+        } else {
+            nextDayLimit = dailyLimit
+        }
     }
 
     /// Κανονική αλλαγή: ισχύει από την επόμενη μέρα. Δεν χρειάζεται PIN.
@@ -404,6 +411,7 @@ class IQOSBLEManager: NSObject, ObservableObject {
             }
 
             DailyState.resetIfNewDay()
+            syncLimitFromStorage()
             DailyState.baseline = current
             DailyState.puffsToday = 0
             DailyState.locked  = false
@@ -584,6 +592,7 @@ class IQOSBLEManager: NSObject, ObservableObject {
         defer { isEvaluating = false; lastEvaluation = Date() }
 
         DailyState.resetIfNewDay()
+        syncLimitFromStorage()
 
         guard let lifetimeCount = await readPuffCount() else { return }
 
