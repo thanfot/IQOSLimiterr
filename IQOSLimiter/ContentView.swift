@@ -39,11 +39,21 @@ struct ContentView: View {
 #if os(iOS)
             .navigationBarTitleDisplayMode(.large)
 #endif
+            // Κρυφή είσοδος admin: 5 γρήγορα taps οπουδήποτε στο scroll
+            .simultaneousGesture(
+                TapGesture(count: 5).onEnded { ble.showPinPrompt = true }
+            )
             .sheet(isPresented: $showLimitPicker) {
-                LimitPickerSheet(limit: $tempLimit) {
-                    ble.setDailyLimit(tempLimit)
+                LimitPickerSheet(limit: $tempLimit,
+                                 todayLimit: ble.dailyLimit,
+                                 nextDayLimit: ble.nextDayLimit,
+                                 isAdmin: ble.isAdmin) {
+                    ble.setNextDayLimit(tempLimit)
                     showLimitPicker = false
                 }
+            }
+            .sheet(isPresented: $ble.showPinPrompt) {
+                PinSheet(ble: ble)
             }
             .sheet(isPresented: $showTotalPicker) {
                 TotalPickerSheet(total: $tempTotal) {
@@ -285,7 +295,7 @@ struct ActionsSection: View {
 
             HStack(spacing: 12) {
                 Button {
-                    tempLimit = ble.dailyLimit
+                    tempLimit = ble.nextDayLimit
                     showLimitPicker = true
                 } label: {
                     Label("Ημερήσιο Όριο", systemImage: "slider.horizontal.3")
@@ -337,13 +347,34 @@ struct ActionsSection: View {
 // ── Limit Picker Sheet ────────────────────────────────────────────────────────
 struct LimitPickerSheet: View {
     @Binding var limit: Int
+    let todayLimit: Int
+    let nextDayLimit: Int
+    let isAdmin: Bool
     let onSave: () -> Void
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 32) {
-                Text("Πόσα sticks την ημέρα;")
-                    .font(.title2.bold())
+            VStack(spacing: 20) {
+                // Το σημερινό όριο δεν αλλάζει εκτός admin mode
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Σήμερα")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text("\(todayLimit) sticks")
+                            .font(.title3.bold())
+                    }
+                    Spacer()
+                    Image(systemName: "lock.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .padding()
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+
+                Text(isAdmin ? "Νέο όριο — ισχύει άμεσα (admin)"
+                             : "Νέο όριο — ισχύει από αύρια")
+                    .font(.headline)
+                    .foregroundStyle(isAdmin ? .green : .secondary)
 
                 Picker("Ημερήσιο όριο", selection: $limit) {
                     ForEach(1...100, id: \.self) { n in
@@ -355,7 +386,15 @@ struct LimitPickerSheet: View {
 #else
                 .pickerStyle(.menu)
 #endif
-                .frame(height: 180)
+                .frame(height: 150)
+
+                if !isAdmin {
+                    Text("Χωρίς κωδικό η αλλαγή κλειδώνεται για τη σημερινή ημέρα. "
+                         + "Πάτα 5 taps για κωδικό.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
 
                 Button("Αποθήκευση") { onSave() }
                     .buttonStyle(.borderedProminent)
@@ -556,6 +595,196 @@ struct JSONInspectorSheet: View {
             }
         }
         .presentationDetents([.large])
+    }
+}
+
+// ── Admin PIN Sheet ───────────────────────────────────────────────────────────
+/// Κλειδιο του διαχειριστή: 5 taps οπουδήποτε → κωδικός.
+/// Χωρίς κωδικό το όριο αλλάζει μόνο για αύρια και το lock/unlock είναι αποκλεισμένο.
+struct PinSheet: View {
+    @ObservedObject var ble: IQOSBLEManager
+
+    private enum Mode { case entry, setNew, resetConfirm }
+
+    @State private var mode: Mode = .entry
+    @State private var entry = ""
+    @State private var firstPin = ""
+    @State private var message: String?
+    @State private var authed = false
+
+    private var title: String {
+        switch mode {
+        case .entry:        return "Κωδικός διαχειριστή"
+        case .setNew:       return "Νέος κωδικός"
+        case .resetConfirm: return "Καθαρισμός"
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 24) {
+                switch mode {
+                case .entry:
+                    dots
+                case .setNew:
+                    Text(firstPin.isEmpty ? "Βάλε 4 νούμερα" : "Ξανά για επιβεβαίωση")
+                        .font(.headline)
+                        .foregroundStyle(.secondary)
+                    dots
+                case .resetConfirm:
+                    resetConfirm
+                }
+
+                if mode != .resetConfirm {
+                    keypad
+                }
+
+                if let message {
+                    Text(message)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                        .multilineTextAlignment(.center)
+                }
+
+                Spacer()
+
+                if mode == .entry && ble.canResetPin {
+                    Button("Ξέχασες τον κωδικό;") {
+                        mode = .resetConfirm
+                        entry = ""
+                        message = nil
+                    }
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+                }
+            }
+            .padding()
+            .navigationTitle(title)
+#if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+#endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Κλείσιμο") { close(success: authed) }
+                }
+            }
+        }
+        .presentationDetents([.medium])
+        .onAppear { entry = ""; message = nil }
+    }
+
+    // ── Pieces ────────────────────────────────────────────────────────────────
+
+    private var dots: some View {
+        HStack(spacing: 18) {
+            ForEach(0..<4, id: \.self) { i in
+                Circle()
+                    .strokeBorder(.secondary)
+                    .background(Circle().fill(i < entry.count ? Color.accentColor : .clear))
+                    .frame(width: 18, height: 18)
+            }
+        }
+    }
+
+    private var keypad: some View {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 3), spacing: 12) {
+            ForEach(["1","2","3","4","5","6","7","8","9","·","0","⌫"], id: \.self) { key in
+                if key == "·" {
+                    Color.clear.frame(height: 56)
+                } else {
+                    Button { tap(key) } label: {
+                        Text(key)
+                            .font(.title2.monospacedDigit())
+                            .frame(maxWidth: .infinity, minHeight: 56)
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+        }
+    }
+
+    private var resetConfirm: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.largeTitle)
+                .foregroundStyle(.orange)
+            Text("Καθαρισμός ρυθμίσεων")
+                .font(.headline)
+            Text("Χάνεις τον μετρητή της ημέρας και ο κωδικός μηδενίζεται. "
+                 + "Το IQOS ξεκλειδώνεται — δεν μπορείς να μείνεις μπλοκαρισμένος.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            HStack(spacing: 12) {
+                Button("Ακύρωση") {
+                    mode = .entry
+                    message = nil
+                }
+                .buttonStyle(.bordered)
+
+                Button("Επιβεβαίωση", role: .destructive) {
+                    ble.resetAdminAccess()
+                    firstPin = ""
+                    entry = ""
+                    mode = .setNew
+                    message = "Ορίσε νέο 4ψήφιο κωδικό"
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+    }
+
+    // ── Logic ─────────────────────────────────────────────────────────────────
+
+    private func tap(_ key: String) {
+        switch key {
+        case "⌫":
+            if !entry.isEmpty { entry.removeLast(); message = nil }
+        case "·":
+            break
+        default:
+            guard entry.count < 4 else { return }
+            entry.append(key)
+            message = nil
+            if entry.count == 4 { submit() }
+        }
+    }
+
+    private func submit() {
+        switch mode {
+        case .entry:
+            if ble.verifyPin(entry) {
+                authed = true
+                entry = ""
+                close(success: true)
+            } else {
+                entry = ""
+                message = "Λάθος κωδικός — προσπάθεια \(ble.pinFailures)/\(IQOSBLEManager.pinMaxFails)"
+            }
+
+        case .setNew:
+            if firstPin.isEmpty {
+                firstPin = entry
+                entry = ""
+                message = "Ξανά τα ίδια 4 νούμερα"
+            } else if entry == firstPin {
+                ble.setNewPin(entry)
+                authed = true
+                firstPin = ""; entry = ""
+                close(success: true)
+            } else {
+                firstPin = ""; entry = ""
+                message = "Δεν ταιριάζουν — ξανά από την αρχή"
+            }
+
+        case .resetConfirm:
+            break
+        }
+    }
+
+    private func close(success: Bool) {
+        if !success { ble.endAdminSession() }
+        ble.showPinPrompt = false
     }
 }
 

@@ -63,6 +63,8 @@ struct DailyState {
     static let keyBaseline      = "iqos.baseline"
     static let keyPuffsToday    = "iqos.puffsToday"
     static let keyLocked        = "iqos.locked"
+    static let keyLimitToday    = "iqos.limit"
+    static let keyLimitNext     = "iqos.limit.next"
 
     static var today: String {
         let fmt = DateFormatter()
@@ -73,11 +75,23 @@ struct DailyState {
     static func resetIfNewDay() {
         let ud = UserDefaults.standard
         if ud.string(forKey: keyDate) != today {
+            // Νέα μέρα: το προγραμματισμένο όριο γίνεται το όριο της ημέρας.
+            if ud.object(forKey: keyLimitNext) != nil {
+                ud.set(ud.integer(forKey: keyLimitNext), forKey: keyLimitToday)
+            }
             ud.set(today, forKey: keyDate)
             ud.removeObject(forKey: keyBaseline)
             ud.set(0, forKey: keyPuffsToday)
             ud.set(false, forKey: keyLocked)
         }
+    }
+
+    /// Αν η σημερινή ημέρα είναι ήδη γνωστή, το κλειδωμένο όριο της ημέρας.
+    static var committedLimit: Int? {
+        guard let stored = UserDefaults.standard.string(forKey: keyDate),
+              stored == today else { return nil }
+        guard UserDefaults.standard.object(forKey: keyLimitToday) != nil else { return nil }
+        return UserDefaults.standard.integer(forKey: keyLimitToday)
     }
 
     static var baseline: Int? {
@@ -129,9 +143,24 @@ class IQOSBLEManager: NSObject, ObservableObject {
     @Published var connectionState: ConnectionState = .idle
     @Published var puffsToday: Int    = DailyState.puffsToday
     @Published var rawPuffsToday: Int = 0
-    @Published var dailyLimit: Int    = UserDefaults.standard.object(forKey: "iqos.limit") == nil
+    @Published var dailyLimit: Int    = UserDefaults.standard.object(forKey: DailyState.keyLimitToday) == nil
                                             ? 5
-                                            : UserDefaults.standard.integer(forKey: "iqos.limit")
+                                            : UserDefaults.standard.integer(forKey: DailyState.keyLimitToday)
+    /// Όριο που θα ισχύσει από την επόμενη μέρα (ελεύθερα αλλάζει χωρίς PIN)
+    @Published var nextDayLimit: Int  = UserDefaults.standard.object(forKey: DailyState.keyLimitNext) == nil
+                                            ? (UserDefaults.standard.object(forKey: DailyState.keyLimitToday) == nil
+                                                ? 5
+                                                : UserDefaults.standard.integer(forKey: DailyState.keyLimitToday))
+                                            : UserDefaults.standard.integer(forKey: DailyState.keyLimitNext)
+    // ── Admin (PIN) ───────────────────────────────────────────────────────────
+    static let pinKey       = "iqos.admin.pin"
+    static let pinFailsKey  = "iqos.admin.fails"
+    static let pinMaxFails  = 5
+    /// Επίτρεπει αλλαγή σημερινού ορίου / lock / unlock / reset
+    @Published var isAdmin: Bool = false
+    /// Εμφάνιση του PIN pad (το πετάει ο View)
+    @Published var showPinPrompt: Bool = false
+    @Published var pinFailures: Int = UserDefaults.standard.integer(forKey: IQOSBLEManager.pinFailsKey)
     @Published var isLocked: Bool     = DailyState.locked
     @Published var statusMessage: String = "Άνοιξε την εφαρμογή για να ξεκινήσει"
     @Published var lifetimePuffs: Int = 0
@@ -247,22 +276,93 @@ class IQOSBLEManager: NSObject, ObservableObject {
         #endif
     }
 
-    func setDailyLimit(_ limit: Int) {
+    /// Κανονική αλλαγή: ισχύει από την επόμενη μέρα. Δεν χρειάζεται PIN.
+    func setNextDayLimit(_ limit: Int) {
+        nextDayLimit = limit
+        UserDefaults.standard.set(limit, forKey: DailyState.keyLimitNext)
+        if isAdmin { setTodayLimit(limit) }
+    }
+
+    /// Admin αλλαγή: ισχύει άμεσα για σήμερα. Απαιτεί isAdmin.
+    func setTodayLimit(_ limit: Int) {
+        guard isAdmin else { showPinPrompt = true; return }
         dailyLimit = limit
-        UserDefaults.standard.set(limit, forKey: "iqos.limit")
+        UserDefaults.standard.set(limit, forKey: DailyState.keyLimitToday)
+        Task { await evaluateLimit() }
+    }
+
+    // ── PIN ────────────────────────────────────────────────────────────────────
+
+    /// Το προεπιλεγμένο PIN όταν δεν έχει οριστεί ακόμη.
+    static let defaultPin = "0000"
+
+    var storedPin: String { UserDefaults.standard.string(forKey: Self.pinKey) ?? Self.defaultPin }
+
+    var hasCustomPin: Bool { UserDefaults.standard.string(forKey: Self.pinKey) != nil }
+
+    /// Ελέγχει κωδικό. Σωστό → admin. Λάθος → μετρητής, στο pinMaxFails επιτρέπεται καθαρισμός.
+    @discardableResult
+    func verifyPin(_ pin: String) -> Bool {
+        if pin == storedPin {
+            isAdmin = true
+            pinFailures = 0
+            UserDefaults.standard.set(0, forKey: Self.pinFailsKey)
+            return true
+        }
+        pinFailures += 1
+        UserDefaults.standard.set(pinFailures, forKey: Self.pinFailsKey)
+        return false
+    }
+
+    var canResetPin: Bool { pinFailures >= Self.pinMaxFails }
+
+    /// Κλείνει το admin mode (π.χ. όταν κλείσει το sheet).
+    func endAdminSession() { isAdmin = false }
+
+    func setNewPin(_ pin: String) {
+        UserDefaults.standard.set(pin, forKey: Self.pinKey)
+        pinFailures = 0
+        UserDefaults.standard.set(0, forKey: Self.pinFailsKey)
+        isAdmin = true
+    }
+
+    /// Recovery όταν έχασες τον κωδικό: καθαρισμός ρυθμίσεων + ξεκλείδωμα
+    /// συσκευής, ώστε να μην μείνεις ποτέ μπλοκαρισμένος από το IQOS.
+    func resetAdminAccess() {
+        let ud = UserDefaults.standard
+        ud.removeObject(forKey: Self.pinKey)
+        ud.removeObject(forKey: Self.pinFailsKey)
+        pinFailures = 0
+        isAdmin = true
+
+        // Καθαρισμός ημερήσιας κατάστασης
+        ud.removeObject(forKey: DailyState.keyBaseline)
+        ud.removeObject(forKey: DailyState.keyLimitNext)
+        ud.set(0, forKey: DailyState.keyPuffsToday)
+        puffsToday = 0
+        rawPuffsToday = 0
+        currentStickProgress = 0
+
+        // Ξεκλείδωμα συσκευής — δεν μπορείς να μείνεις μπλοκαρισμένος
+        if isLocked {
+            Task { await sendUnlock() }
+        }
         Task { await evaluateLimit() }
     }
 
     func setTotalLifetimeSticks(_ count: Int) {
+        guard isAdmin else { showPinPrompt = true; return }
         totalLifetimeSticks = count
         UserDefaults.standard.set(count, forKey: "iqos.totalLifetimeSticks")
     }
 
     func manualLock() {
+        guard isAdmin else { showPinPrompt = true; return }
         Task { await sendLock() }
     }
 
     func manualUnlock() {
+        guard isAdmin else { showPinPrompt = true; return }
         Task { await sendUnlock() }
     }
 
@@ -291,6 +391,7 @@ class IQOSBLEManager: NSObject, ObservableObject {
     }
 
     func resetTodayBaseline() {
+        guard isAdmin else { showPinPrompt = true; return }
         Task { @MainActor in
             guard !isEvaluating else { return }
             isEvaluating = true
