@@ -65,6 +65,8 @@ struct DailyState {
     static let keyLocked        = "iqos.locked"
     static let keyLimitToday    = "iqos.limit"
     static let keyLimitNext     = "iqos.limit.next"
+    static let keyNotifiedLimit   = "iqos.notified.limit"
+    static let keyNotifiedOneLeft = "iqos.notified.oneLeft"
 
     static var today: String {
         let fmt = DateFormatter()
@@ -83,6 +85,8 @@ struct DailyState {
             ud.removeObject(forKey: keyBaseline)
             ud.set(0, forKey: keyPuffsToday)
             ud.set(false, forKey: keyLocked)
+            ud.set(false, forKey: keyNotifiedLimit)
+            ud.set(false, forKey: keyNotifiedOneLeft)
         }
     }
 
@@ -102,6 +106,18 @@ struct DailyState {
     static var locked: Bool {
         get { UserDefaults.standard.bool(forKey: keyLocked) }
         set { UserDefaults.standard.set(newValue, forKey: keyLocked) }
+    }
+
+    /// Έχει σταλεί ήδη η ειδοποίηση «έφτασες το όριο» για σήμερα;
+    static var notifiedLimit: Bool {
+        get { UserDefaults.standard.bool(forKey: keyNotifiedLimit) }
+        set { UserDefaults.standard.set(newValue, forKey: keyNotifiedLimit) }
+    }
+
+    /// Έχει σταλεί ήδη η ειδοποίηση «μένει 1» για σήμερα;
+    static var notifiedOneLeft: Bool {
+        get { UserDefaults.standard.bool(forKey: keyNotifiedOneLeft) }
+        set { UserDefaults.standard.set(newValue, forKey: keyNotifiedOneLeft) }
     }
 }
 
@@ -295,6 +311,8 @@ class IQOSBLEManager: NSObject, ObservableObject {
         guard isAdmin else { showPinPrompt = true; return }
         dailyLimit = limit
         UserDefaults.standard.set(limit, forKey: DailyState.keyLimitToday)
+        DailyState.notifiedLimit = false
+        DailyState.notifiedOneLeft = false
         Task { await evaluateLimit() }
     }
 
@@ -415,6 +433,8 @@ class IQOSBLEManager: NSObject, ObservableObject {
             DailyState.baseline = current
             DailyState.puffsToday = 0
             DailyState.locked  = false
+            DailyState.notifiedLimit = false
+            DailyState.notifiedOneLeft = false
 
             lifetimePuffs        = current
             puffsToday           = 0
@@ -567,8 +587,6 @@ class IQOSBLEManager: NSObject, ObservableObject {
         isLocked         = true
         DailyState.locked = true
         statusMessage     = "🔒 Κλειδωμένο — Επίτευξες το ημερήσιο όριο!"
-        sendNotification(title: "IQOS Κλειδωμένο 🔒",
-                         body: "Έφτασες τα \(dailyLimit) sticks για σήμερα. Καλή συνέχεια!")
     }
 
     @MainActor
@@ -631,9 +649,19 @@ class IQOSBLEManager: NSObject, ObservableObject {
 
         if sticksToday >= dailyLimit {
             statusMessage = "🚫 Όριο! \(sticksToday)/\(dailyLimit) sticks"
+            if !DailyState.notifiedLimit {
+                DailyState.notifiedLimit = true
+                sendNotification(title: "Έφτασες το όριο 🚫",
+                                 body: "\(sticksToday)/\(dailyLimit) sticks για σήμερα. Το IQOS κλειδώνει.")
+            }
             if !isLocked { await sendLock() }
         } else {
             statusMessage = "✅ \(sticksToday)/\(dailyLimit) sticks — Απομένουν \(remaining)"
+            if remaining == 1 && !DailyState.notifiedOneLeft {
+                DailyState.notifiedOneLeft = true
+                sendNotification(title: "Μένει μόνο 1 stick ⚠️",
+                                 body: "Απομένει ένα τσιγάρο για σήμερα (\(sticksToday)/\(dailyLimit)).")
+            }
             if isLocked { await sendUnlock() }  // νέα μέρα, ξεκλείδωμα
         }
     }
