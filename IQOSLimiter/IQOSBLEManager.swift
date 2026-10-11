@@ -1,4 +1,6 @@
 import CoreBluetooth
+import CryptoKit
+import Security
 import Combine
 import UserNotifications
 
@@ -57,6 +59,13 @@ private let kTagPuffCount: UInt8      = 0x8E
 // Επιβεβαιωμένο 2026-10-05: δύο καπνίσματα → μετρητής +2.
 private let kCounterIsInSticks = true
 
+/// Αν ο μετρητής ήταν σε puffs, τόσα puffs ≈ 1 stick.
+private let kPuffsPerStick = 19.0
+/// Μεγαλύτερη διαφορά από το baseline θεωρείται corrupt baseline (repair).
+private let kMaxPlausibleDailyDiff = 60
+/// Η «μέρα» αλλάζει στις 04:00 (όχι τα μεσάνυχτα), ώστε τα βραδινά να μετράνε στην ίδια μέρα.
+private let kDayStartHour = 4
+
 // ── Daily State (UserDefaults) ────────────────────────────────────────────────
 struct DailyState {
     static let keyDate          = "iqos.date"
@@ -67,16 +76,24 @@ struct DailyState {
     static let keyLimitNext     = "iqos.limit.next"
     static let keyNotifiedLimit   = "iqos.notified.limit"
     static let keyNotifiedOneLeft = "iqos.notified.oneLeft"
+    static let keyNotifiedHalf    = "iqos.notified.half"
 
     static var today: String {
         let fmt = DateFormatter()
         fmt.dateFormat = "yyyy-MM-dd"
-        return fmt.string(from: Date())
+        let shifted = Calendar.current.date(byAdding: .hour, value: -kDayStartHour, to: Date()) ?? Date()
+        return fmt.string(from: shifted)
     }
 
     static func resetIfNewDay() {
         let ud = UserDefaults.standard
         if ud.string(forKey: keyDate) != today {
+            // Αρχειοθέτηση της προηγούμενης μέρας στο ιστορικό
+            if let prevDate = ud.string(forKey: keyDate) {
+                UsageHistory.record(date: prevDate,
+                                    sticks: ud.integer(forKey: keyPuffsToday),
+                                    limit: ud.object(forKey: keyLimitToday) == nil ? 5 : ud.integer(forKey: keyLimitToday))
+            }
             // Νέα μέρα: το προγραμματισμένο όριο γίνεται το όριο της ημέρας.
             if ud.object(forKey: keyLimitNext) != nil {
                 ud.set(ud.integer(forKey: keyLimitNext), forKey: keyLimitToday)
@@ -87,6 +104,7 @@ struct DailyState {
             ud.set(false, forKey: keyLocked)
             ud.set(false, forKey: keyNotifiedLimit)
             ud.set(false, forKey: keyNotifiedOneLeft)
+            ud.set(false, forKey: keyNotifiedHalf)
         }
     }
 
@@ -114,10 +132,107 @@ struct DailyState {
         set { UserDefaults.standard.set(newValue, forKey: keyNotifiedLimit) }
     }
 
+    /// Έχει σταλεί ήδη η ειδοποίηση «πέρασες το μισό όριο» για σήμερα;
+    static var notifiedHalf: Bool {
+        get { UserDefaults.standard.bool(forKey: keyNotifiedHalf) }
+        set { UserDefaults.standard.set(newValue, forKey: keyNotifiedHalf) }
+    }
+
     /// Έχει σταλεί ήδη η ειδοποίηση «μένει 1» για σήμερα;
     static var notifiedOneLeft: Bool {
         get { UserDefaults.standard.bool(forKey: keyNotifiedOneLeft) }
         set { UserDefaults.standard.set(newValue, forKey: keyNotifiedOneLeft) }
+    }
+}
+
+// ── Usage History ─────────────────────────────────────────────────────────────
+struct DayRecord: Codable, Identifiable {
+    let date: String   // yyyy-MM-dd
+    let sticks: Int
+    let limit: Int
+    var id: String { date }
+}
+
+enum UsageHistory {
+    private static let key = "iqos.history"
+    private static let maxDays = 90
+
+    static var all: [DayRecord] {
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let list = try? JSONDecoder().decode([DayRecord].self, from: data) else { return [] }
+        return list
+    }
+
+    static func record(date: String, sticks: Int, limit: Int) {
+        var list = all.filter { $0.date != date }
+        list.append(DayRecord(date: date, sticks: sticks, limit: limit))
+        list.sort { $0.date < $1.date }
+        if list.count > maxDays { list = Array(list.suffix(maxDays)) }
+        if let data = try? JSONEncoder().encode(list) {
+            UserDefaults.standard.set(data, forKey: key)
+        }
+    }
+
+    /// Τελευταίες `days` μέρες (παλιότερη → νεότερη) συμπεριλαμβανομένης της σημερινής.
+    static func recent(days: Int, todaySticks: Int, todayLimit: Int) -> [DayRecord] {
+        var list = all.filter { $0.date != DailyState.today }
+        list.append(DayRecord(date: DailyState.today, sticks: todaySticks, limit: todayLimit))
+        return Array(list.suffix(days))
+    }
+}
+
+// ── PIN store (Keychain, salted SHA-256) ──────────────────────────────────────
+enum PinStore {
+    private static let service = "iqos.admin"
+    private static let account = "pin"
+
+    private static var query: [String: Any] {
+        [kSecClass as String: kSecClassGenericPassword,
+         kSecAttrService as String: service,
+         kSecAttrAccount as String: account]
+    }
+
+    private static func hash(_ pin: String, salt: String) -> String {
+        SHA256.hash(data: Data((salt + pin).utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static var stored: String? {
+        var q = query
+        q[kSecReturnData as String] = true
+        q[kSecMatchLimit as String] = kSecMatchLimitOne
+        var out: AnyObject?
+        guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess,
+              let data = out as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    static var hasPin: Bool { stored != nil }
+
+    static func set(_ pin: String) {
+        let salt = UUID().uuidString
+        let value = Data("\(salt):\(hash(pin, salt: salt))".utf8)
+        SecItemDelete(query as CFDictionary)
+        var q = query
+        q[kSecValueData as String] = value
+        q[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        SecItemAdd(q as CFDictionary, nil)
+    }
+
+    static func clear() { SecItemDelete(query as CFDictionary) }
+
+    static func verify(_ pin: String) -> Bool {
+        guard let stored, let sep = stored.firstIndex(of: ":") else { return false }
+        let salt = String(stored[..<sep])
+        return hash(pin, salt: salt) == String(stored[stored.index(after: sep)...])
+    }
+
+    /// Μεταφέρει παλιό PIN από UserDefaults (plain text) στο Keychain.
+    static func migrateLegacy(key: String) {
+        let ud = UserDefaults.standard
+        if let legacy = ud.string(forKey: key) {
+            if !hasPin { set(legacy) }
+            ud.removeObject(forKey: key)
+        }
     }
 }
 
@@ -260,6 +375,7 @@ class IQOSBLEManager: NSObject, ObservableObject {
         syncLimitFromStorage()
         centralManager = CBCentralManager(delegate: self, queue: .main,
                                           options: [CBCentralManagerOptionRestoreIdentifierKey: "iqos.restore"])
+        PinStore.migrateLegacy(key: Self.pinKey)
         requestNotificationPermission()
     }
 
@@ -321,33 +437,61 @@ class IQOSBLEManager: NSObject, ObservableObject {
     /// Το προεπιλεγμένο PIN όταν δεν έχει οριστεί ακόμη.
     static let defaultPin = "0000"
 
-    var storedPin: String { UserDefaults.standard.string(forKey: Self.pinKey) ?? Self.defaultPin }
+    var hasCustomPin: Bool { PinStore.hasPin }
 
-    var hasCustomPin: Bool { UserDefaults.standard.string(forKey: Self.pinKey) != nil }
+    private static let pinLastFailKey = "iqos.admin.lastFail"
+    /// Μετά από τόσες αποτυχίες ισχύει αναμονή πριν την επόμενη προσπάθεια.
+    private static let pinCooldownAfter = 3
+    private static let pinCooldownSeconds: TimeInterval = 30
+    /// Πόσο πρέπει να περάσει από την τελευταία αποτυχία για να επιτραπεί ο καθαρισμός.
+    private static let pinResetWaitSeconds: TimeInterval = 15 * 60
 
-    /// Ελέγχει κωδικό. Σωστό → admin. Λάθος → μετρητής, στο pinMaxFails επιτρέπεται καθαρισμός.
+    private var lastFailDate: Date? {
+        let t = UserDefaults.standard.double(forKey: Self.pinLastFailKey)
+        return t > 0 ? Date(timeIntervalSince1970: t) : nil
+    }
+
+    /// Δευτερόλεπτα αναμονής πριν την επόμενη προσπάθεια (0 = ελεύθερο).
+    var pinCooldownRemaining: Int {
+        guard pinFailures >= Self.pinCooldownAfter, let last = lastFailDate else { return 0 }
+        return max(0, Int((Self.pinCooldownSeconds - Date().timeIntervalSince(last)).rounded(.up)))
+    }
+
+    /// Δευτερόλεπτα μέχρι να επιτραπεί ο καθαρισμός (0 = διαθέσιμος).
+    var resetWaitRemaining: Int {
+        guard pinFailures >= Self.pinMaxFails else { return Int(Self.pinResetWaitSeconds) }
+        guard let last = lastFailDate else { return 0 }
+        return max(0, Int((Self.pinResetWaitSeconds - Date().timeIntervalSince(last)).rounded(.up)))
+    }
+
+    /// Ελέγχει κωδικό. Σωστό → admin. Λάθος → μετρητής + cooldown.
     @discardableResult
     func verifyPin(_ pin: String) -> Bool {
-        if pin == storedPin {
+        guard pinCooldownRemaining == 0 else { return false }
+        let ok = hasCustomPin ? PinStore.verify(pin) : pin == Self.defaultPin
+        if ok {
             isAdmin = true
             pinFailures = 0
             UserDefaults.standard.set(0, forKey: Self.pinFailsKey)
+            UserDefaults.standard.removeObject(forKey: Self.pinLastFailKey)
             return true
         }
         pinFailures += 1
         UserDefaults.standard.set(pinFailures, forKey: Self.pinFailsKey)
+        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: Self.pinLastFailKey)
         return false
     }
 
-    var canResetPin: Bool { pinFailures >= Self.pinMaxFails }
+    var canResetPin: Bool { pinFailures >= Self.pinMaxFails && resetWaitRemaining == 0 }
 
     /// Κλείνει το admin mode (π.χ. όταν κλείσει το sheet).
     func endAdminSession() { isAdmin = false }
 
     func setNewPin(_ pin: String) {
-        UserDefaults.standard.set(pin, forKey: Self.pinKey)
+        PinStore.set(pin)
         pinFailures = 0
         UserDefaults.standard.set(0, forKey: Self.pinFailsKey)
+        UserDefaults.standard.removeObject(forKey: Self.pinLastFailKey)
         isAdmin = true
     }
 
@@ -355,8 +499,9 @@ class IQOSBLEManager: NSObject, ObservableObject {
     /// συσκευής, ώστε να μην μείνεις ποτέ μπλοκαρισμένος από το IQOS.
     func resetAdminAccess() {
         let ud = UserDefaults.standard
-        ud.removeObject(forKey: Self.pinKey)
+        PinStore.clear()
         ud.removeObject(forKey: Self.pinFailsKey)
+        ud.removeObject(forKey: Self.pinLastFailKey)
         pinFailures = 0
         isAdmin = true
 
@@ -623,8 +768,7 @@ class IQOSBLEManager: NSObject, ObservableObject {
         var currentBaseline = DailyState.baseline ?? 0
 
         // Repair: το παλιό bug έγραφε baseline = 1 → τεράστια νούμερα. Ξαναβάζουμε baseline.
-        let maxPlausibleDiff = 60
-        if currentBaseline > 0 && lifetimeCount - currentBaseline > maxPlausibleDiff {
+        if currentBaseline > 0 && lifetimeCount - currentBaseline > kMaxPlausibleDailyDiff {
             currentBaseline = lifetimeCount
             DailyState.baseline = lifetimeCount
             statusMessage = "⚠️ Baseline διορθώθηκε στα \(lifetimeCount)"
@@ -638,12 +782,13 @@ class IQOSBLEManager: NSObject, ObservableObject {
 
         // Ο μετρητής της συσκευής είναι σε τερέα → το diff είναι ήδη sticks
         let diff = max(0, lifetimeCount - currentBaseline)
-        let sticksToday = kCounterIsInSticks ? diff : Int((Double(diff) / 19.0).rounded())
+        let sticksToday = kCounterIsInSticks ? diff : Int((Double(diff) / kPuffsPerStick).rounded())
         rawPuffsToday = diff
         currentStickProgress = 0
 
         puffsToday = sticksToday
         DailyState.puffsToday = sticksToday
+        UsageHistory.record(date: DailyState.today, sticks: sticksToday, limit: dailyLimit)
 
         let remaining = max(0, dailyLimit - sticksToday)
 
@@ -657,6 +802,11 @@ class IQOSBLEManager: NSObject, ObservableObject {
             if !isLocked { await sendLock() }
         } else {
             statusMessage = "✅ \(sticksToday)/\(dailyLimit) sticks — Απομένουν \(remaining)"
+            if dailyLimit >= 4 && sticksToday * 2 >= dailyLimit && !DailyState.notifiedHalf {
+                DailyState.notifiedHalf = true
+                sendNotification(title: "Μισό όριο ⏳",
+                                 body: "\(sticksToday)/\(dailyLimit) sticks — πέρασες το μισό για σήμερα.")
+            }
             if remaining == 1 && !DailyState.notifiedOneLeft {
                 DailyState.notifiedOneLeft = true
                 sendNotification(title: "Μένει μόνο 1 stick ⚠️",
@@ -753,6 +903,8 @@ extension IQOSBLEManager: CBCentralManagerDelegate {
     func centralManager(_ central: CBCentralManager,
                         didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         stopPolling()
+        sendNotification(title: "Το IQOS αποσυνδέθηκε",
+                         body: "Χωρίς σύνδεση δεν μπορεί να εφαρμοστεί το όριο. Ξανασυνδέομαι…")
         connectionState   = .disconnected
         iqosPeripheral    = nil
         controlChar       = nil
