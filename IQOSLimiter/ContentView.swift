@@ -23,6 +23,9 @@ struct ContentView: View {
                     // ── Stats Grid ────────────────────────────────────────────
                     StatsGrid(ble: ble)
 
+                    // ── History ───────────────────────────────────────────────
+                    HistoryChart(ble: ble)
+
                     // ── Actions ───────────────────────────────────────────────
                     ActionsSection(ble: ble, showLimitPicker: $showLimitPicker, tempLimit: $tempLimit, showTotalPicker: $showTotalPicker, tempTotal: $tempTotal, showJSONSheet: $showJSONSheet, rawJSONText: $rawJSONText)
 
@@ -648,14 +651,20 @@ struct PinSheet: View {
 
                 Spacer()
 
-                if mode == .entry && ble.canResetPin {
-                    Button("Ξέχασες τον κωδικό;") {
-                        mode = .resetConfirm
-                        entry = ""
-                        message = nil
+                if mode == .entry && ble.pinFailures >= IQOSBLEManager.pinMaxFails {
+                    if ble.canResetPin {
+                        Button("Ξέχασες τον κωδικό;") {
+                            mode = .resetConfirm
+                            entry = ""
+                            message = nil
+                        }
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                    } else {
+                        Text("Καθαρισμός διαθέσιμος σε \(ble.resetWaitRemaining / 60 + 1) λεπτά")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
                     }
-                    .font(.footnote)
-                    .foregroundStyle(.red)
                 }
             }
             .padding()
@@ -759,7 +768,10 @@ struct PinSheet: View {
                 close(success: true)
             } else {
                 entry = ""
-                message = "Λάθος κωδικός — προσπάθεια \(ble.pinFailures)/\(IQOSBLEManager.pinMaxFails)"
+                let wait = ble.pinCooldownRemaining
+                message = wait > 0
+                    ? "Λάθος κωδικός — περίμενε \(wait)\" πριν ξαναδοκιμάσεις"
+                    : "Λάθος κωδικός — προσπάθεια \(ble.pinFailures)/\(IQOSBLEManager.pinMaxFails)"
             }
 
         case .setNew:
@@ -792,5 +804,46 @@ struct ContentView_Previews: PreviewProvider {
     static var previews: some View {
         ContentView()
             .environmentObject(IQOSBLEManager())
+    }
+}
+
+
+// ── History Chart (τελευταίες 7 μέρες) ────────────────────────────────────────
+struct HistoryChart: View {
+    @ObservedObject var ble: IQOSBLEManager
+
+    private var days: [DayRecord] {
+        UsageHistory.recent(days: 7, todaySticks: ble.puffsToday, todayLimit: ble.dailyLimit)
+    }
+
+    var body: some View {
+        let data = days
+        let maxValue = max(1, data.map { max($0.sticks, $0.limit) }.max() ?? 1)
+        let avg = data.isEmpty ? 0 : Double(data.map(\.sticks).reduce(0, +)) / Double(data.count)
+
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Τελευταίες 7 μέρες").font(.headline)
+                Spacer()
+                Text(String(format: "μ.ό. %.1f", avg))
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+            HStack(alignment: .bottom, spacing: 8) {
+                ForEach(data) { d in
+                    VStack(spacing: 4) {
+                        Text("\(d.sticks)").font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(d.sticks > d.limit ? Color.red : Color.green)
+                            .frame(height: max(4, 80 * CGFloat(d.sticks) / CGFloat(maxValue)))
+                        Text(String(d.date.suffix(5)))
+                            .font(.system(size: 9)).foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+            }
+            .frame(height: 120, alignment: .bottom)
+        }
+        .padding()
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
     }
 }
