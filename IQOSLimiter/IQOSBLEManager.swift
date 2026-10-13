@@ -70,6 +70,7 @@ private let kDayStartHour = 4
 struct DailyState {
     static let keyDate          = "iqos.date"
     static let keyBaseline      = "iqos.baseline"
+    static let keyLastLifetime  = "iqos.lastLifetime"
     static let keyPuffsToday    = "iqos.puffsToday"
     static let keyLocked        = "iqos.locked"
     static let keyLimitToday    = "iqos.limit"
@@ -114,6 +115,16 @@ struct DailyState {
             return UserDefaults.standard.object(forKey: keyBaseline) == nil ? nil : v
         }
         set { UserDefaults.standard.set(newValue, forKey: keyBaseline) }
+    }
+
+    /// Το τελευταίο lifetime count που είδε το app. Στη νέα μέρα γίνεται baseline,
+    /// ώστε sticks που έγιναν ενώ το app ήταν κλειστό να μετρηθούν και όχι να χαθούν.
+    static var lastLifetime: Int? {
+        get {
+            UserDefaults.standard.object(forKey: keyLastLifetime) == nil
+                ? nil : UserDefaults.standard.integer(forKey: keyLastLifetime)
+        }
+        set { UserDefaults.standard.set(newValue, forKey: keyLastLifetime) }
     }
 
     static var puffsToday: Int {
@@ -293,6 +304,8 @@ class IQOSBLEManager: NSObject, ObservableObject {
     @Published var lastGATTPackets: [[String: String]] = []
     /// Όλα τα αποκωδικοποιημένα πεδία telemetry (για debug / εντοπισμό άλλων counters)
     @Published var telemetryFields: [TelemetryField] = []
+    /// Στάλθηκε ειδοποίηση αποσύνδεσης που περιμένει «επανασύνδεση»;
+    private var pendingReconnectNotice = false
     /// Το τελευταίο αποδεκτό lifetime puff count (tag 0x8E)
     private var lastPuffCount: Int = 0
 
@@ -507,6 +520,7 @@ class IQOSBLEManager: NSObject, ObservableObject {
 
         // Καθαρισμός ημερήσιας κατάστασης
         ud.removeObject(forKey: DailyState.keyBaseline)
+        ud.removeObject(forKey: DailyState.keyLastLifetime)
         ud.removeObject(forKey: DailyState.keyLimitNext)
         ud.set(0, forKey: DailyState.keyPuffsToday)
         puffsToday = 0
@@ -765,6 +779,13 @@ class IQOSBLEManager: NSObject, ObservableObject {
         }
 
         // Ορισμός baseline αν είναι πρώτη φορά σήμερα ή αν το baseline είναι 0/άκυρο
+        // Πρώτο evaluation της μέρας: baseline = τελευταίο count που είχαμε δει (όχι το τωρινό),
+        // ώστε να μετρήσουν τα sticks που έγιναν όσο το app ήταν κλειστό/αποσυνδεδεμένο.
+        if DailyState.baseline == nil,
+           let last = DailyState.lastLifetime,
+           last <= lifetimeCount, lifetimeCount - last <= kMaxPlausibleDailyDiff {
+            DailyState.baseline = last
+        }
         var currentBaseline = DailyState.baseline ?? 0
 
         // Repair: το παλιό bug έγραφε baseline = 1 → τεράστια νούμερα. Ξαναβάζουμε baseline.
@@ -788,6 +809,7 @@ class IQOSBLEManager: NSObject, ObservableObject {
 
         puffsToday = sticksToday
         DailyState.puffsToday = sticksToday
+        DailyState.lastLifetime = lifetimeCount
         UsageHistory.record(date: DailyState.today, sticks: sticksToday, limit: dailyLimit)
 
         let remaining = max(0, dailyLimit - sticksToday)
@@ -904,7 +926,8 @@ extension IQOSBLEManager: CBCentralManagerDelegate {
                         didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         stopPolling()
         sendNotification(title: "Το IQOS αποσυνδέθηκε",
-                         body: "Χωρίς σύνδεση δεν μπορεί να εφαρμοστεί το όριο. Ξανασυνδέομαι…")
+                         body: "Χωρίς σύνδεση δεν μπορεί να εφαρμοστεί το όριο. Θα σε ειδοποιήσω όταν συνδεθεί ξανά.")
+        pendingReconnectNotice = true
         connectionState   = .disconnected
         iqosPeripheral    = nil
         controlChar       = nil
@@ -961,6 +984,11 @@ extension IQOSBLEManager: CBPeripheralDelegate {
         }
         if controlChar != nil {
             statusMessage = "Συνδεδεμένο ✓ (Έτοιμο για εντολές)"
+            if pendingReconnectNotice {
+                pendingReconnectNotice = false
+                sendNotification(title: "Το IQOS συνδέθηκε ξανά ✓",
+                                 body: "Το όριο εφαρμόζεται ξανά κανονικά.")
+            }
             Task { await evaluateLimit() }
             startPolling()
         }
