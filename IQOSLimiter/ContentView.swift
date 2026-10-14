@@ -32,6 +32,9 @@ struct ContentView: View {
                     // ── IQOS Device Controls & Settings ───────────────────────
                     DeviceSettingsSection(ble: ble)
 
+                    // ── Event log ─────────────────────────────────────────────
+                    EventLogSection(ble: ble)
+
                     // ── Debug: decoded telemetry fields ──────────────────────
                     TelemetryFieldsSection(ble: ble)
 
@@ -849,6 +852,30 @@ struct HistoryChart: View {
             }
             .frame(height: 120, alignment: .bottom)
         }
+        .padding()
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+    }
+}
+
+
+// ── Event Log (τελευταία συμβάντα, για διάγνωση) ─────────────────────────────
+struct EventLogSection: View {
+    @ObservedObject var ble: IQOSBLEManager
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("🧾 Συμβάντα").font(.headline)
+            if ble.eventLog.isEmpty {
+                Text("(κανένα ακόμα)").font(.caption).foregroundStyle(.secondary)
+            } else {
+                ForEach(Array(ble.eventLog.prefix(25).enumerated()), id: \.offset) { _, line in
+                    Text(line)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding()
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
     }

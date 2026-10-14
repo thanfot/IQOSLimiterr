@@ -668,13 +668,57 @@ class IQOSBLEManager: NSObject, ObservableObject {
         pollingTimer = nil
     }
 
+    /// Εκτελεί `work` με background-task assertion, ώστε το iOS να μη παγώσει το app στη μέση της μέτρησης.
+    @MainActor
+    private func runInBackgroundTask(_ work: @escaping () async -> Void) {
+        #if os(iOS)
+        var taskID = UIBackgroundTaskIdentifier.invalid
+        taskID = UIApplication.shared.beginBackgroundTask(withName: "iqos-evaluate") {
+            UIApplication.shared.endBackgroundTask(taskID)
+            taskID = .invalid
+        }
+        Task {
+            await work()
+            if taskID != .invalid { UIApplication.shared.endBackgroundTask(taskID) }
+        }
+        #else
+        Task { await work() }
+        #endif
+    }
+
+    /// Αξιολόγηση με επαναλήψεις: στο background, αμέσως μετά τη σύνδεση, η πρώτη ανάγνωση
+    /// μπορεί να αποτύχει και δεν θα υπάρξει άλλος έλεγχος (οι timers δεν τρέχουν).
+    @MainActor
+    func evaluateWithRetry() {
+        runInBackgroundTask { [weak self] in
+            guard let self else { return }
+            for attempt in 1...4 {
+                if await self.evaluateLimit() { return }
+                if attempt < 4 { try? await Task.sleep(nanoseconds: 2_000_000_000) }
+            }
+        }
+    }
+
+    // ── Event log (για διάγνωση — φαίνεται στην κύρια οθόνη) ─────────────────
+    @Published var eventLog: [String] = UserDefaults.standard.stringArray(forKey: "iqos.eventlog") ?? []
+
+    func logEvent(_ text: String) {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "dd/MM HH:mm:ss"
+        var list = eventLog
+        list.insert("\(fmt.string(from: Date()))  \(text)", at: 0)
+        if list.count > 60 { list = Array(list.prefix(60)) }
+        eventLog = list
+        UserDefaults.standard.set(list, forKey: "iqos.eventlog")
+    }
+
     /// Εκκίνηση αξιολόγησης με καθυστέρηση — ακυρώνει οποιαδήποτε προηγούμενη αναμονή
     @MainActor
     private func scheduleEvaluation(after delay: TimeInterval) {
         pendingEvaluation?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            Task { @MainActor in await self.evaluateLimit() }
+            Task { @MainActor in self.evaluateWithRetry() }
         }
         pendingEvaluation = work
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
@@ -806,15 +850,19 @@ class IQOSBLEManager: NSObject, ObservableObject {
     // ── Limit evaluation ──────────────────────────────────────────────────────
 
     @MainActor
-    func evaluateLimit() async {
-        guard !isEvaluating else { return }
+    @discardableResult
+    func evaluateLimit() async -> Bool {
+        guard !isEvaluating else { return false }
         isEvaluating = true
         defer { isEvaluating = false; lastEvaluation = Date() }
 
         DailyState.resetIfNewDay()
         syncLimitFromStorage()
 
-        guard let lifetimeCount = await readPuffCount() else { return }
+        guard let lifetimeCount = await readPuffCount() else {
+            logEvent("δεν διαβάστηκε ο μετρητής")
+            return false
+        }
 
         lifetimePuffs = lifetimeCount
         if totalLifetimeSticks == 0 {
@@ -854,6 +902,7 @@ class IQOSBLEManager: NSObject, ObservableObject {
         currentStickProgress = 0
 
         let previousSticks = DailyState.puffsToday
+        logEvent("μέτρηση: \(sticksToday) sticks (πριν \(previousSticks)), μετρητής \(lifetimeCount)")
         puffsToday = sticksToday
         DailyState.puffsToday = sticksToday
         DailyState.lastLifetime = lifetimeCount
@@ -887,6 +936,7 @@ class IQOSBLEManager: NSObject, ObservableObject {
             statusMessage = "✅ \(sticksToday)/\(dailyLimit) sticks — Απομένουν \(remaining)"
             if isLocked { await sendUnlock() }  // νέα μέρα, ξεκλείδωμα
         }
+        return true
     }
 
     // ── Notifications ─────────────────────────────────────────────────────────
@@ -918,7 +968,11 @@ class IQOSBLEManager: NSObject, ObservableObject {
     }
 
     private func sendNotification(title: String, body: String) {
-        guard !appIsActive else { return }
+        guard !appIsActive else {
+            logEvent("ειδοποίηση (παραλείφθηκε, app ανοιχτό): \(title)")
+            return
+        }
+        logEvent("ειδοποίηση: \(title)")
         let content        = UNMutableNotificationContent()
         content.title      = title
         content.body       = body
@@ -1007,6 +1061,7 @@ extension IQOSBLEManager: CBCentralManagerDelegate {
     }
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        logEvent("συνδέθηκε")
         connectionState    = .connected
         iqosPeripheral     = peripheral
         peripheral.delegate = self
@@ -1019,6 +1074,7 @@ extension IQOSBLEManager: CBCentralManagerDelegate {
     func centralManager(_ central: CBCentralManager,
                         didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         stopPolling()
+        logEvent("αποσύνδεση\(error.map { " (\($0.localizedDescription))" } ?? "")")
         sendNotification(title: "Το IQOS αποσυνδέθηκε",
                          body: "Χωρίς σύνδεση δεν μπορεί να εφαρμοστεί το όριο. Θα σε ειδοποιήσω όταν συνδεθεί ξανά.")
         pendingReconnectNotice = true
@@ -1092,7 +1148,8 @@ extension IQOSBLEManager: CBPeripheralDelegate {
                 sendNotification(title: "Το IQOS συνδέθηκε ξανά ✓",
                                  body: "Το όριο εφαρμόζεται ξανά κανονικά.")
             }
-            Task { await evaluateLimit() }
+            logEvent("έτοιμο για εντολές")
+            Task { @MainActor in self.evaluateWithRetry() }
             startPolling()
         }
     }
