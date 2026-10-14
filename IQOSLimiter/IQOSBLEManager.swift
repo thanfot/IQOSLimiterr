@@ -847,6 +847,7 @@ class IQOSBLEManager: NSObject, ObservableObject {
         rawPuffsToday = diff
         currentStickProgress = 0
 
+        let previousSticks = DailyState.puffsToday
         puffsToday = sticksToday
         DailyState.puffsToday = sticksToday
         DailyState.lastLifetime = lifetimeCount
@@ -854,26 +855,30 @@ class IQOSBLEManager: NSObject, ObservableObject {
 
         let remaining = max(0, dailyLimit - sticksToday)
 
+        // Μία ειδοποίηση κάθε φορά που προστίθεται stick (και στο background, μόλις συνδεθεί το IQOS).
+        let added = sticksToday - previousSticks
+        if added > 0 {
+            let what = added == 1 ? "Νέο stick" : "\(added) νέα sticks"
+            if sticksToday > dailyLimit {
+                sendNotification(title: "\(what) — πάνω από το όριο 🚫",
+                                 body: "\(sticksToday)/\(dailyLimit) sticks σήμερα. Ξεπέρασες το όριο.")
+            } else if sticksToday == dailyLimit {
+                sendNotification(title: "Έφτασες το όριο 🚫",
+                                 body: "\(sticksToday)/\(dailyLimit) sticks σήμερα. Το IQOS κλειδώνει.")
+            } else if remaining == 1 {
+                sendNotification(title: "\(what) — μένει μόνο 1 ⚠️",
+                                 body: "\(sticksToday)/\(dailyLimit) sticks σήμερα.")
+            } else {
+                sendNotification(title: "\(what): \(sticksToday)/\(dailyLimit)",
+                                 body: "Απομένουν \(remaining) για σήμερα.")
+            }
+        }
+
         if sticksToday >= dailyLimit {
             statusMessage = "🚫 Όριο! \(sticksToday)/\(dailyLimit) sticks"
-            if !DailyState.notifiedLimit {
-                DailyState.notifiedLimit = true
-                sendNotification(title: "Έφτασες το όριο 🚫",
-                                 body: "\(sticksToday)/\(dailyLimit) sticks για σήμερα. Το IQOS κλειδώνει.")
-            }
             if !isLocked { await sendLock() }
         } else {
             statusMessage = "✅ \(sticksToday)/\(dailyLimit) sticks — Απομένουν \(remaining)"
-            if dailyLimit >= 4 && sticksToday * 2 >= dailyLimit && !DailyState.notifiedHalf {
-                DailyState.notifiedHalf = true
-                sendNotification(title: "Μισό όριο ⏳",
-                                 body: "\(sticksToday)/\(dailyLimit) sticks — πέρασες το μισό για σήμερα.")
-            }
-            if remaining == 1 && !DailyState.notifiedOneLeft {
-                DailyState.notifiedOneLeft = true
-                sendNotification(title: "Μένει μόνο 1 stick ⚠️",
-                                 body: "Απομένει ένα τσιγάρο για σήμερα (\(sticksToday)/\(dailyLimit)).")
-            }
             if isLocked { await sendUnlock() }  // νέα μέρα, ξεκλείδωμα
         }
     }
