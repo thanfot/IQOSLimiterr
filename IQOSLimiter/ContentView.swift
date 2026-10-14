@@ -32,6 +32,20 @@ struct ContentView: View {
                     // ── IQOS Device Controls & Settings ───────────────────────
                     DeviceSettingsSection(ble: ble)
 
+                    // ── Background ────────────────────────────────────────────
+                    #if os(iOS)
+                    Toggle(isOn: Binding(get: { ble.keepAliveEnabled },
+                                         set: { ble.setKeepAlive($0) })) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Λειτουργία στο background").font(.callout)
+                            Text("Αθόρυβος ήχος ώστε το app να μετράει και με κλειδωμένη οθόνη")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding()
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+                    #endif
+
                     // ── Event log ─────────────────────────────────────────────
                     EventLogSection(ble: ble)
 

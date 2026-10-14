@@ -1,3 +1,4 @@
+import AVFoundation
 import CoreBluetooth
 import CryptoKit
 import Security
@@ -161,6 +162,69 @@ struct DailyState {
         get { UserDefaults.standard.bool(forKey: keyNotifiedOneLeft) }
         set { UserDefaults.standard.set(newValue, forKey: keyNotifiedOneLeft) }
     }
+}
+
+// ── Background keep-alive (αθόρυβος ήχος) ─────────────────────────────────────
+/// Το iOS παγώνει ένα app στο background μέσα σε λίγα δευτερόλεπτα και οι timers σταματούν,
+/// οπότε το polling κάθε 10" δεν δουλεύει. Ένα αθόρυβο loop ήχου (UIBackgroundModes: audio)
+/// κρατά το app ζωντανό. Μόνο για iOS· δεν επηρεάζει μουσική που παίζει (mixWithOthers).
+final class BackgroundKeepAlive {
+    static let shared = BackgroundKeepAlive()
+    static let enabledKey = "iqos.keepAlive"
+
+    #if os(iOS)
+    private var player: AVAudioPlayer?
+
+    /// 1 δευτερόλεπτο σιωπής (16-bit mono PCM WAV, 8 kHz) στη μνήμη.
+    private static var silentWAV: Data {
+        let sampleRate: UInt32 = 8000
+        let dataSize = sampleRate * 2
+        var d = Data()
+        func u32(_ v: UInt32) { var x = v.littleEndian; d.append(Data(bytes: &x, count: 4)) }
+        func u16(_ v: UInt16) { var x = v.littleEndian; d.append(Data(bytes: &x, count: 2)) }
+        d.append("RIFF".data(using: .ascii)!); u32(36 + dataSize)
+        d.append("WAVEfmt ".data(using: .ascii)!); u32(16); u16(1); u16(1)
+        u32(sampleRate); u32(sampleRate * 2); u16(2); u16(16)
+        d.append("data".data(using: .ascii)!); u32(dataSize)
+        d.append(Data(count: Int(dataSize)))
+        return d
+    }
+
+    private init() {
+        NotificationCenter.default.addObserver(forName: AVAudioSession.interruptionNotification,
+                                               object: nil, queue: .main) { [weak self] note in
+            guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  AVAudioSession.InterruptionType(rawValue: raw) == .ended else { return }
+            self?.start()
+        }
+    }
+
+    func start() {
+        guard UserDefaults.standard.object(forKey: Self.enabledKey) as? Bool ?? true else { return }
+        if player?.isPlaying == true { return }
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+            try session.setActive(true)
+            let p = try AVAudioPlayer(data: Self.silentWAV)
+            p.numberOfLoops = -1
+            p.prepareToPlay()
+            p.play()
+            player = p
+        } catch {
+            player = nil
+        }
+    }
+
+    func stop() {
+        player?.stop()
+        player = nil
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    }
+    #else
+    func start() {}
+    func stop() {}
+    #endif
 }
 
 // ── Usage History ─────────────────────────────────────────────────────────────
@@ -430,6 +494,7 @@ class IQOSBLEManager: NSObject, ObservableObject {
         PinStore.migrateLegacy(key: Self.pinKey)
         PinStore.adoptBundleSeed()
         observeAppActivity()
+        BackgroundKeepAlive.shared.start()
         requestNotificationPermission()
     }
 
@@ -697,6 +762,16 @@ class IQOSBLEManager: NSObject, ObservableObject {
                 if attempt < 4 { try? await Task.sleep(nanoseconds: 2_000_000_000) }
             }
         }
+    }
+
+    @Published var keepAliveEnabled: Bool =
+        UserDefaults.standard.object(forKey: BackgroundKeepAlive.enabledKey) as? Bool ?? true
+
+    func setKeepAlive(_ enabled: Bool) {
+        keepAliveEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: BackgroundKeepAlive.enabledKey)
+        enabled ? BackgroundKeepAlive.shared.start() : BackgroundKeepAlive.shared.stop()
+        logEvent("background keep-alive: \(enabled ? "ON" : "OFF")")
     }
 
     // ── Event log (για διάγνωση — φαίνεται στην κύρια οθόνη) ─────────────────
