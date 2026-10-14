@@ -991,7 +991,8 @@ class IQOSBLEManager: NSObject, ObservableObject {
         if added > 0 {
             let what = added == 1 ? "Νέο stick" : "\(added) νέα sticks"
             if sticksToday > dailyLimit {
-                sendNotification(title: "Πάνω από το όριο: \(sticksToday)/\(dailyLimit)", body: "")
+                sendNotification(title: "Πάνω από το όριο: \(sticksToday)/\(dailyLimit)",
+                                 body: "Ξεπέρασες το ημερήσιο όριο.")
             } else if sticksToday == dailyLimit {
                 sendNotification(title: "Έφτασες το όριο: \(sticksToday)/\(dailyLimit)",
                                  body: "Το IQOS κλειδώνει.")
@@ -1180,7 +1181,8 @@ extension IQOSBLEManager: CBCentralManagerDelegate {
                         didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         stopPolling()
         logEvent("αποσύνδεση\(error.map { " (\($0.localizedDescription))" } ?? "")")
-        sendNotification(title: "Αποσυνδέθηκε το IQOS", body: "")
+        sendNotification(title: "Αποσυνδέθηκε το IQOS",
+                         body: "Αναμονή για επανασύνδεση…")
         pendingReconnectNotice = true
         connectionState   = .disconnected
         controlChar       = nil
@@ -1249,7 +1251,8 @@ extension IQOSBLEManager: CBPeripheralDelegate {
             statusMessage = "Συνδεδεμένο ✓ (Έτοιμο για εντολές)"
             if pendingReconnectNotice {
                 pendingReconnectNotice = false
-                sendNotification(title: "Συνδέθηκε το IQOS", body: "")
+                sendNotification(title: "Συνδέθηκε το IQOS",
+                                 body: "Το όριο ελέγχεται ξανά.")
             }
             logEvent("έτοιμο για εντολές")
             Task { @MainActor in self.evaluateWithRetry() }
