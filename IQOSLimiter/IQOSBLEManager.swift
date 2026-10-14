@@ -3,6 +3,11 @@ import CryptoKit
 import Security
 import Combine
 import UserNotifications
+#if os(iOS)
+import UIKit
+#elseif os(macOS)
+import AppKit
+#endif
 
 // ── IQOS BLE Protocol Constants ───────────────────────────────────────────────
 // Βασισμένο στο https://github.com/hauntedfail/iqos (GPL-3.0)
@@ -424,6 +429,7 @@ class IQOSBLEManager: NSObject, ObservableObject {
                                           options: [CBCentralManagerOptionRestoreIdentifierKey: "iqos.restore"])
         PinStore.migrateLegacy(key: Self.pinKey)
         PinStore.adoptBundleSeed()
+        observeAppActivity()
         requestNotificationPermission()
     }
 
@@ -890,7 +896,29 @@ class IQOSBLEManager: NSObject, ObservableObject {
             .requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
     }
 
+    /// Όσο το app είναι ανοιχτό και ενεργό δεν στέλνουμε ειδοποιήσεις — η πληροφορία φαίνεται ήδη στην οθόνη.
+    private var appIsActive = false
+
+    private func observeAppActivity() {
+        #if os(iOS)
+        appIsActive = UIApplication.shared.applicationState == .active
+        let active = UIApplication.didBecomeActiveNotification
+        let resign = UIApplication.willResignActiveNotification
+        #else
+        appIsActive = NSApplication.shared.isActive
+        let active = NSApplication.didBecomeActiveNotification
+        let resign = NSApplication.willResignActiveNotification
+        #endif
+        NotificationCenter.default.addObserver(forName: active, object: nil, queue: .main) { [weak self] _ in
+            self?.appIsActive = true
+        }
+        NotificationCenter.default.addObserver(forName: resign, object: nil, queue: .main) { [weak self] _ in
+            self?.appIsActive = false
+        }
+    }
+
     private func sendNotification(title: String, body: String) {
+        guard !appIsActive else { return }
         let content        = UNMutableNotificationContent()
         content.title      = title
         content.body       = body
