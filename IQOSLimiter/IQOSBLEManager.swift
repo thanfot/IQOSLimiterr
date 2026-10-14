@@ -69,8 +69,6 @@ private let kCounterIsInSticks = true
 private let kPuffsPerStick = 19.0
 /// Μεγαλύτερη διαφορά από το baseline θεωρείται corrupt baseline (repair).
 private let kMaxPlausibleDailyDiff = 60
-/// Η «μέρα» αλλάζει στις 04:00 (όχι τα μεσάνυχτα), ώστε τα βραδινά να μετράνε στην ίδια μέρα.
-private let kDayStartHour = 4
 
 // ── Daily State (UserDefaults) ────────────────────────────────────────────────
 struct DailyState {
@@ -86,12 +84,7 @@ struct DailyState {
     static let keyNotifiedOneLeft = "iqos.notified.oneLeft"
     static let keyNotifiedHalf    = "iqos.notified.half"
 
-    static var today: String {
-        let fmt = DateFormatter()
-        fmt.dateFormat = "yyyy-MM-dd"
-        let shifted = Calendar.current.date(byAdding: .hour, value: -kDayStartHour, to: Date()) ?? Date()
-        return fmt.string(from: shifted)
-    }
+    static var today: String { IQOSShared.dayKey() }
 
     static func resetIfNewDay() {
         let ud = UserDefaults.standard
@@ -983,6 +976,7 @@ class IQOSBLEManager: NSObject, ObservableObject {
         DailyState.puffsToday = sticksToday
         DailyState.lastLifetime = lifetimeCount
         UsageHistory.record(date: DailyState.today, sticks: sticksToday, limit: dailyLimit)
+        IQOSShared.publish(sticks: sticksToday, limit: dailyLimit)
 
         let remaining = max(0, dailyLimit - sticksToday)
 
