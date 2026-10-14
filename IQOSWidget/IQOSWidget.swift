@@ -44,13 +44,20 @@ struct IQOSWidgetView: View {
     var body: some View {
         switch family {
         case .accessoryCircular:
-            VStack(spacing: 0) {
-                Text("\(entry.sticks)/\(entry.limit)")
-                    .font(.system(size: 18, weight: .bold, design: .rounded))
-                    .minimumScaleFactor(0.6)
-                Text("−\(entry.remaining)")
-                    .font(.system(size: 11, weight: .medium))
+            // Δαχτυλίδι που γεμίζει ανάλογα με το όριο (σαν το widget του καιρού)
+            Gauge(value: Double(min(entry.sticks, max(entry.limit, 1))),
+                  in: 0...Double(max(entry.limit, 1))) {
+                EmptyView()
+            } currentValueLabel: {
+                VStack(spacing: -1) {
+                    Text("\(entry.sticks)/\(entry.limit)")
+                        .font(.system(size: 14, weight: .bold, design: .rounded))
+                        .minimumScaleFactor(0.6)
+                    Text("−\(entry.remaining)")
+                        .font(.system(size: 10, weight: .medium, design: .rounded))
+                }
             }
+            .gaugeStyle(.accessoryCircularCapacity)
         case .accessoryRectangular:
             VStack(alignment: .leading, spacing: 2) {
                 Text("\(entry.sticks)/\(entry.limit) sticks")
