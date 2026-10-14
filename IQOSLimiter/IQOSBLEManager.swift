@@ -941,9 +941,28 @@ class IQOSBLEManager: NSObject, ObservableObject {
 // ── CBCentralManagerDelegate ─────────────────────────────────────────────────
 extension IQOSBLEManager: CBCentralManagerDelegate {
 
+    /// Εκκρεμής σύνδεση (δεν λήγει ποτέ): το iOS συνδέει μόνο του όταν το IQOS ξαναεμφανιστεί
+    /// και ξυπνά το app ακόμα κι αν είναι στο background. Οι timers δεν δουλεύουν σε suspended app,
+    /// γι' αυτό δεν βασιζόμαστε σε σάρωση με timer.
+    fileprivate func connectPending(_ central: CBCentralManager, _ peripheral: CBPeripheral) {
+        reconnectTimer?.invalidate()
+        iqosPeripheral      = peripheral
+        peripheral.delegate = self
+        connectionState     = .connecting
+        central.connect(peripheral, options: nil)
+    }
+
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         if central.state == .poweredOn {
-            startScanning()
+            // Γνωστό IQOS από προηγούμενη φορά → απευθείας (εκκρεμής) σύνδεση, χωρίς σάρωση
+            if let idString = UserDefaults.standard.string(forKey: "iqos.peripheralID"),
+               let id = UUID(uuidString: idString),
+               let known = central.retrievePeripherals(withIdentifiers: [id]).first {
+                statusMessage = "Σύνδεση με το IQOS..."
+                connectPending(central, known)
+            } else {
+                startScanning()
+            }
         } else {
             #if os(iOS)
             if central.authorization == .denied || central.authorization == .restricted {
@@ -989,7 +1008,9 @@ extension IQOSBLEManager: CBCentralManagerDelegate {
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         connectionState    = .connected
+        iqosPeripheral     = peripheral
         peripheral.delegate = self
+        UserDefaults.standard.set(peripheral.identifier.uuidString, forKey: "iqos.peripheralID")
         // Discover ALL services on IQOS ILUMA
         peripheral.discoverServices(nil)
         statusMessage = "Συνδεδεμένο! Ανακάλυψη υπηρεσιών..."
@@ -1002,17 +1023,19 @@ extension IQOSBLEManager: CBCentralManagerDelegate {
                          body: "Χωρίς σύνδεση δεν μπορεί να εφαρμοστεί το όριο. Θα σε ειδοποιήσω όταν συνδεθεί ξανά.")
         pendingReconnectNotice = true
         connectionState   = .disconnected
-        iqosPeripheral    = nil
         controlChar       = nil
         notifyChar        = nil
-        statusMessage     = "Αποσυνδέθηκε — αναζήτηση..."
-        scheduleReconnect()
+        statusMessage     = "Αποσυνδέθηκε — περιμένω να επανέλθει..."
+        // Εκκρεμής σύνδεση: δουλεύει και στο background
+        connectPending(central, peripheral)
     }
 
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
         stopPolling()
-        iqosPeripheral = nil
-        scheduleReconnect()
+        // Ξαναδοκιμάζουμε σύντομα με εκκρεμή σύνδεση (και όχι με timer-σάρωση)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            self?.connectPending(central, peripheral)
+        }
     }
 
     // State restoration (background BLE)
@@ -1021,6 +1044,13 @@ extension IQOSBLEManager: CBCentralManagerDelegate {
            let peripheral  = peripherals.first {
             iqosPeripheral      = peripheral
             peripheral.delegate = self
+            // Το iOS ξύπνησε το app: αν το IQOS είναι συνδεδεμένο συνεχίζουμε, αλλιώς εκκρεμής σύνδεση
+            if peripheral.state == .connected {
+                connectionState = .connected
+                peripheral.discoverServices(nil)
+            } else {
+                connectPending(central, peripheral)
+            }
         }
     }
 }
