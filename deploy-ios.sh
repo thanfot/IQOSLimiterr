@@ -28,7 +28,7 @@ echo "▸ Συσκευή: $UUID"
 # Δημιουργείται μία φορά και μένει στο ~/.iqoslimiter-pin (εκτός repo). Στο app πάει μόνο το hash.
 PIN_FILE="$HOME/.iqoslimiter-pin"
 if [ ! -s "$PIN_FILE" ]; then
-    (umask 077; LC_ALL=C tr -dc '0-9' </dev/urandom | head -c 6 > "$PIN_FILE")
+    (umask 077; LC_ALL=C tr -dc '0-9' </dev/urandom | head -c 6 > "$PIN_FILE") || true
     echo "▸ Νέο τυχαίο PIN αποθηκεύτηκε στο $PIN_FILE"
 fi
 ADMIN_PIN_HASH=$(printf '%s' "iqoslimiter$(cat "$PIN_FILE")" | shasum -a 256 | cut -d' ' -f1)
