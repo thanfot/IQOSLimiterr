@@ -630,7 +630,7 @@ struct PinSheet: View {
                 case .entry:
                     dots
                 case .setNew:
-                    Text(firstPin.isEmpty ? "Βάλε 4 νούμερα" : "Ξανά για επιβεβαίωση")
+                    Text(firstPin.isEmpty ? "Βάλε \(PinStore.length) νούμερα" : "Ξανά για επιβεβαίωση")
                         .font(.headline)
                         .foregroundStyle(.secondary)
                     dots
@@ -686,7 +686,7 @@ struct PinSheet: View {
 
     private var dots: some View {
         HStack(spacing: 18) {
-            ForEach(0..<4, id: \.self) { i in
+            ForEach(0..<PinStore.length, id: \.self) { i in
                 Circle()
                     .strokeBorder(.secondary)
                     .background(Circle().fill(i < entry.count ? Color.accentColor : .clear))
@@ -735,8 +735,14 @@ struct PinSheet: View {
                     ble.resetAdminAccess()
                     firstPin = ""
                     entry = ""
-                    mode = .setNew
-                    message = "Ορίσε νέο 4ψήφιο κωδικό"
+                    if ble.hasProvisionedPin {
+                        // Το PIN μένει ο τυχαίος κωδικός — ο καθαρισμός δίνει μόνο μία συνεδρία admin.
+                        authed = true
+                        close(success: true)
+                    } else {
+                        mode = .setNew
+                        message = "Ορίσε νέο \(PinStore.length)ψήφιο κωδικό"
+                    }
                 }
                 .buttonStyle(.borderedProminent)
             }
@@ -752,10 +758,10 @@ struct PinSheet: View {
         case "·":
             break
         default:
-            guard entry.count < 4 else { return }
+            guard entry.count < PinStore.length else { return }
             entry.append(key)
             message = nil
-            if entry.count == 4 { submit() }
+            if entry.count == PinStore.length { submit() }
         }
     }
 
@@ -778,7 +784,7 @@ struct PinSheet: View {
             if firstPin.isEmpty {
                 firstPin = entry
                 entry = ""
-                message = "Ξανά τα ίδια 4 νούμερα"
+                message = "Ξανά τα ίδια \(PinStore.length) νούμερα"
             } else if entry == firstPin {
                 ble.setNewPin(entry)
                 authed = true

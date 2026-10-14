@@ -24,22 +24,31 @@ else
 fi
 echo "▸ Συσκευή: $UUID"
 
-# ── 2. Build ──
+# ── 2. Τυχαίο admin PIN ──
+# Δημιουργείται μία φορά και μένει στο ~/.iqoslimiter-pin (εκτός repo). Στο app πάει μόνο το hash.
+PIN_FILE="$HOME/.iqoslimiter-pin"
+if [ ! -s "$PIN_FILE" ]; then
+    (umask 077; LC_ALL=C tr -dc '0-9' </dev/urandom | head -c 6 > "$PIN_FILE")
+    echo "▸ Νέο τυχαίο PIN αποθηκεύτηκε στο $PIN_FILE"
+fi
+ADMIN_PIN_HASH=$(printf '%s' "iqoslimiter$(cat "$PIN_FILE")" | shasum -a 256 | cut -d' ' -f1)
+
+# ── 3. Build ──
 echo "▸ Build…"
 cd "$PROJECT_DIR"
 xcodebuild -project IQOSLimiter.xcodeproj -scheme IQOSLimiter-iOS -configuration Debug \
-    -destination "id=$UUID" -allowProvisioningUpdates build \
+    -destination "id=$UUID" -allowProvisioningUpdates ADMIN_PIN_HASH="$ADMIN_PIN_HASH" build \
     | grep -E "error:|warning: .*[Pp]rovision|BUILD" || true
 
 APP=$(find ~/Library/Developer/Xcode/DerivedData/IQOSLimiter-*/Build/Products/Debug-iphoneos \
       -maxdepth 1 -name "IQOSLimiter-iOS.app" | head -1)
 [ -z "$APP" ] && { echo "❌ Δεν βρέθηκε το .app — μάλλον απέτυχε το build"; exit 1; }
 
-# ── 3. Install ──
+# ── 4. Install ──
 echo "▸ Εγκατάσταση…"
 xcrun devicectl device install app --device "$UUID" "$APP" | grep -iE "installed|error"
 
-# ── 4. Launch ──
+# ── 5. Launch ──
 BUNDLE="com.yourname.iqoslimiter.ios"
 echo "▸ Εκκίνηση…"
 xcrun devicectl device process launch --device "$UUID" --terminate-existing "$BUNDLE" \

@@ -71,6 +71,7 @@ struct DailyState {
     static let keyDate          = "iqos.date"
     static let keyBaseline      = "iqos.baseline"
     static let keyLastLifetime  = "iqos.lastLifetime"
+    static let keyPrevDate      = "iqos.prevDate"
     static let keyPuffsToday    = "iqos.puffsToday"
     static let keyLocked        = "iqos.locked"
     static let keyLimitToday    = "iqos.limit"
@@ -91,6 +92,7 @@ struct DailyState {
         if ud.string(forKey: keyDate) != today {
             // Αρχειοθέτηση της προηγούμενης μέρας στο ιστορικό
             if let prevDate = ud.string(forKey: keyDate) {
+                ud.set(prevDate, forKey: keyPrevDate)
                 UsageHistory.record(date: prevDate,
                                     sticks: ud.integer(forKey: keyPuffsToday),
                                     limit: ud.object(forKey: keyLimitToday) == nil ? 5 : ud.integer(forKey: keyLimitToday))
@@ -184,6 +186,14 @@ enum UsageHistory {
         }
     }
 
+    /// Προσθέτει sticks σε μια ήδη αρχειοθετημένη μέρα (π.χ. όσα έγιναν όσο το app ήταν αποσυνδεδεμένο).
+    static func add(date: String, sticks: Int) {
+        let existing = all.first { $0.date == date }
+        record(date: date,
+               sticks: (existing?.sticks ?? 0) + sticks,
+               limit: existing?.limit ?? 5)
+    }
+
     /// Τελευταίες `days` μέρες (παλιότερη → νεότερη) συμπεριλαμβανομένης της σημερινής.
     static func recent(days: Int, todaySticks: Int, todayLimit: Int) -> [DayRecord] {
         var list = all.filter { $0.date != DailyState.today }
@@ -196,8 +206,13 @@ enum UsageHistory {
 enum PinStore {
     private static let service = "iqos.admin"
     private static let account = "pin"
+    private static let seedAccount = "pin.seed"
+    /// Ίδιο salt με το deploy-ios.sh (που υπολογίζει το hash του τυχαίου PIN).
+    private static let seedSalt = "iqoslimiter"
+    /// Μήκος PIN (το pad και οι τελείες το διαβάζουν από εδώ).
+    static let length = 6
 
-    private static var query: [String: Any] {
+    private static func query(_ account: String) -> [String: Any] {
         [kSecClass as String: kSecClassGenericPassword,
          kSecAttrService as String: service,
          kSecAttrAccount as String: account]
@@ -207,8 +222,8 @@ enum PinStore {
         SHA256.hash(data: Data((salt + pin).utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
-    private static var stored: String? {
-        var q = query
+    private static func read(_ account: String) -> String? {
+        var q = query(account)
         q[kSecReturnData as String] = true
         q[kSecMatchLimit as String] = kSecMatchLimitOne
         var out: AnyObject?
@@ -217,22 +232,41 @@ enum PinStore {
         return String(data: data, encoding: .utf8)
     }
 
-    static var hasPin: Bool { stored != nil }
-
-    static func set(_ pin: String) {
-        let salt = UUID().uuidString
-        let value = Data("\(salt):\(hash(pin, salt: salt))".utf8)
-        SecItemDelete(query as CFDictionary)
-        var q = query
-        q[kSecValueData as String] = value
+    private static func write(_ value: String, account: String) {
+        SecItemDelete(query(account) as CFDictionary)
+        var q = query(account)
+        q[kSecValueData as String] = Data(value.utf8)
         q[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         SecItemAdd(q as CFDictionary, nil)
     }
 
-    static func clear() { SecItemDelete(query as CFDictionary) }
+    // ── Provisioned PIN (τυχαίο, ορίζεται στο build, ο χρήστης δεν το ξέρει) ──
+
+    /// Αν το build έφερε hash PIN (Info.plist → AdminPinHash), το κρατάμε στο Keychain.
+    /// Έτσι ένα μεταγενέστερο build χωρίς αυτό (π.χ. από το Xcode) δεν το καταργεί.
+    static func adoptBundleSeed() {
+        if let h = Bundle.main.object(forInfoDictionaryKey: "AdminPinHash") as? String,
+           h.count == 64, h.allSatisfy({ $0.isHexDigit }) {
+            write(h.lowercased(), account: seedAccount)
+        }
+    }
+
+    static var hasSeed: Bool { read(seedAccount) != nil }
+
+    // ── PIN ορισμένο από τον χρήστη (fallback όταν δεν υπάρχει seed) ──
+
+    static var hasPin: Bool { read(account) != nil }
+
+    static func set(_ pin: String) {
+        let salt = UUID().uuidString
+        write("\(salt):\(hash(pin, salt: salt))", account: account)
+    }
+
+    static func clear() { SecItemDelete(query(account) as CFDictionary) }
 
     static func verify(_ pin: String) -> Bool {
-        guard let stored, let sep = stored.firstIndex(of: ":") else { return false }
+        if let seed = read(seedAccount) { return hash(pin, salt: seedSalt) == seed }
+        guard let stored = read(account), let sep = stored.firstIndex(of: ":") else { return false }
         let salt = String(stored[..<sep])
         return hash(pin, salt: salt) == String(stored[stored.index(after: sep)...])
     }
@@ -389,6 +423,7 @@ class IQOSBLEManager: NSObject, ObservableObject {
         centralManager = CBCentralManager(delegate: self, queue: .main,
                                           options: [CBCentralManagerOptionRestoreIdentifierKey: "iqos.restore"])
         PinStore.migrateLegacy(key: Self.pinKey)
+        PinStore.adoptBundleSeed()
         requestNotificationPermission()
     }
 
@@ -450,7 +485,9 @@ class IQOSBLEManager: NSObject, ObservableObject {
     /// Το προεπιλεγμένο PIN όταν δεν έχει οριστεί ακόμη.
     static let defaultPin = "0000"
 
-    var hasCustomPin: Bool { PinStore.hasPin }
+    var hasCustomPin: Bool { PinStore.hasSeed || PinStore.hasPin }
+    /// Το PIN είναι τυχαίο και ορίστηκε στο build — δεν αλλάζει από την εφαρμογή.
+    var hasProvisionedPin: Bool { PinStore.hasSeed }
 
     private static let pinLastFailKey = "iqos.admin.lastFail"
     /// Μετά από τόσες αποτυχίες ισχύει αναμονή πριν την επόμενη προσπάθεια.
@@ -779,12 +816,15 @@ class IQOSBLEManager: NSObject, ObservableObject {
         }
 
         // Ορισμός baseline αν είναι πρώτη φορά σήμερα ή αν το baseline είναι 0/άκυρο
-        // Πρώτο evaluation της μέρας: baseline = τελευταίο count που είχαμε δει (όχι το τωρινό),
-        // ώστε να μετρήσουν τα sticks που έγιναν όσο το app ήταν κλειστό/αποσυνδεδεμένο.
+        // Πρώτο evaluation της μέρας: ό,τι έγινε από την τελευταία φορά που είδε το app τον μετρητή
+        // (π.χ. αποσύνδεση το βράδυ) ανήκει στην ΠΡΟΗΓΟΥΜΕΝΗ μέρα — δεν μπαίνει στη σημερινή.
         if DailyState.baseline == nil,
            let last = DailyState.lastLifetime,
-           last <= lifetimeCount, lifetimeCount - last <= kMaxPlausibleDailyDiff {
-            DailyState.baseline = last
+           let prev = UserDefaults.standard.string(forKey: DailyState.keyPrevDate),
+           lifetimeCount > last, lifetimeCount - last <= kMaxPlausibleDailyDiff {
+            let gap = lifetimeCount - last
+            UsageHistory.add(date: prev,
+                             sticks: kCounterIsInSticks ? gap : Int((Double(gap) / kPuffsPerStick).rounded()))
         }
         var currentBaseline = DailyState.baseline ?? 0
 

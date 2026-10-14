@@ -35,6 +35,10 @@
 	<key>UIUserNotificationTypes</key>
 	<integer>7</integer>
 
+	<!-- Hash τυχαίου admin PIN, το δίνει το deploy-ios.sh (κενό αν χτίσεις αλλιώς) -->
+	<key>AdminPinHash</key>
+	<string>$(ADMIN_PIN_HASH)</string>
+
 	<key>UILaunchScreen</key>
 	<dict/>
 	<key>UISupportedInterfaceOrientations</key>
