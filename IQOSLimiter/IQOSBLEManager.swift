@@ -495,6 +495,7 @@ class IQOSBLEManager: NSObject, ObservableObject {
         PinStore.adoptBundleSeed()
         observeAppActivity()
         BackgroundKeepAlive.shared.start()
+        startWatchdog()
         requestNotificationPermission()
     }
 
@@ -1036,6 +1037,7 @@ class IQOSBLEManager: NSObject, ObservableObject {
         #endif
         NotificationCenter.default.addObserver(forName: active, object: nil, queue: .main) { [weak self] _ in
             self?.appIsActive = true
+            self?.ensureConnection()
         }
         NotificationCenter.default.addObserver(forName: resign, object: nil, queue: .main) { [weak self] _ in
             self?.appIsActive = false
@@ -1058,6 +1060,34 @@ class IQOSBLEManager: NSObject, ObservableObject {
     }
 
     // ── Auto-reconnect ────────────────────────────────────────────────────────
+
+    // ── Watchdog σύνδεσης ─────────────────────────────────────────────────────
+    private var watchdogTimer: Timer?
+
+    /// Όσο το IQOS είναι αποσυνδεδεμένο, ξαναδοκιμάζει κάθε 15" με όλους τους τρόπους:
+    /// συσκευή ήδη συνδεδεμένη στο σύστημα (δεν διαφημίζεται, άρα η σάρωση δεν τη βρίσκει),
+    /// γνωστή συσκευή (εκκρεμής σύνδεση) και σάρωση. Δεν χρειάζεται πια κλείσιμο/άνοιγμα του app.
+    private func startWatchdog() {
+        watchdogTimer?.invalidate()
+        watchdogTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+            self?.ensureConnection()
+        }
+    }
+
+    fileprivate func ensureConnection() {
+        guard centralManager.state == .poweredOn, connectionState != .connected else { return }
+        if let linked = centralManager.retrieveConnectedPeripherals(withServices: [kIQOSCoreServiceUUID]).first {
+            logEvent("watchdog: βρέθηκε συνδεδεμένο στο σύστημα")
+            connectPending(centralManager, linked)
+            return
+        }
+        if let idString = UserDefaults.standard.string(forKey: "iqos.peripheralID"),
+           let id = UUID(uuidString: idString),
+           let known = centralManager.retrievePeripherals(withIdentifiers: [id]).first {
+            connectPending(centralManager, known)
+        }
+        startScanning()
+    }
 
     private func scheduleReconnect() {
         reconnectTimer?.invalidate()
@@ -1127,7 +1157,8 @@ extension IQOSBLEManager: CBCentralManagerDelegate {
         displayName = name
         #endif
 
-        guard iqosPeripheral == nil else { return }
+        // Αν είναι ήδη συνδεδεμένο αγνοούμε· αν η εκκρεμής σύνδεση έχει κολλήσει, ξαναδοκιμάζουμε.
+        guard iqosPeripheral?.state != .connected else { return }
         central.stopScan()
         iqosPeripheral  = peripheral
         connectionState = .connecting
