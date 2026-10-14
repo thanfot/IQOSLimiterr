@@ -6,6 +6,7 @@ struct IQOSEntry: TimelineEntry {
     let sticks: Int
     let limit: Int
     var remaining: Int { max(0, limit - sticks) }
+    var progress: Double { limit > 0 ? min(1, Double(sticks) / Double(limit)) : 0 }
 
     var color: Color {
         switch remaining {
@@ -59,15 +60,53 @@ struct IQOSWidgetView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         default:
-            VStack(spacing: 4) {
-                Text("\(entry.sticks)/\(entry.limit)")
-                    .font(.system(size: 46, weight: .bold, design: .rounded))
+            VStack(spacing: 10) {
+                ZStack {
+                    Circle()
+                        .stroke(entry.color.opacity(0.18), lineWidth: 11)
+                    Circle()
+                        .trim(from: 0, to: max(entry.progress, 0.001))
+                        .stroke(
+                            AngularGradient(colors: [entry.color.opacity(0.55), entry.color],
+                                            center: .center,
+                                            startAngle: .degrees(0),
+                                            endAngle: .degrees(360 * max(entry.progress, 0.001))),
+                            style: StrokeStyle(lineWidth: 11, lineCap: .round)
+                        )
+                        .rotationEffect(.degrees(-90))
+                    VStack(spacing: -3) {
+                        Text("\(entry.sticks)")
+                            .font(.system(size: 38, weight: .bold, design: .rounded))
+                            .minimumScaleFactor(0.6)
+                        Text("από \(entry.limit)")
+                            .font(.system(size: 11, weight: .medium, design: .rounded))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .frame(width: 96, height: 96)
+
+                Text(entry.remaining == 0 ? "Όριο!" : "Απομένουν \(entry.remaining)")
+                    .font(.system(size: 12, weight: .semibold, design: .rounded))
                     .foregroundStyle(entry.color)
-                    .minimumScaleFactor(0.6)
-                Text("Απομένουν \(entry.remaining)")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(entry.color.opacity(0.16), in: Capsule())
             }
+        }
+    }
+}
+
+/// Φόντο: απαλή διαβάθμιση στο χρώμα της κατάστασης (στην οθόνη κλειδώματος το αφήνουμε του συστήματος).
+struct IQOSBackground: View {
+    @Environment(\.widgetFamily) private var family
+    let entry: IQOSEntry
+
+    var body: some View {
+        if family == .systemSmall {
+            LinearGradient(colors: [entry.color.opacity(0.28), Color(uiColor: .systemBackground)],
+                           startPoint: .topLeading, endPoint: .bottomTrailing)
+        } else {
+            Color.clear
         }
     }
 }
@@ -78,7 +117,7 @@ struct IQOSWidget: Widget {
     var body: some WidgetConfiguration {
         StaticConfiguration(kind: kind, provider: IQOSProvider()) { entry in
             IQOSWidgetView(entry: entry)
-                .containerBackground(.fill.tertiary, for: .widget)
+                .containerBackground(for: .widget) { IQOSBackground(entry: entry) }
         }
         .configurationDisplayName("IQOS Limiter")
         .description("Sticks σήμερα και πόσα απομένουν.")
